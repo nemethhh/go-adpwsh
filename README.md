@@ -1,13 +1,56 @@
 # go-adpwsh
 
 A Go library that drives Active Directory through the `ActiveDirectory`
-PowerShell module running on a Windows jump box, over SSH.
+PowerShell module — either on the Windows host the caller runs on, or on a
+Windows jump box reached over SSH.
 
 It is a separate repository from the Terraform provider that consumes it for one
 reason: managing AD from Go is useful without Terraform, and a library that
 cannot return a `diag.Diagnostics` is a library whose correctness rules cannot
 quietly become someone else's problem. A test in this module fails the build if
 any Terraform package enters the import graph, including through test imports.
+
+## Topology
+
+Two transports, one contract. Both invoke the same fixed command with the same
+JSON payload on stdin, and both hand stdout, stderr and the exit code back
+verbatim.
+
+**On-host — `transport/local`.** The caller already runs on a domain-joined
+Windows host, so the process holds a Kerberos TGT for whoever launched it and
+there is no hop to authenticate.
+
+```
+caller (Windows host)
+   └─ pwsh -EncodedCommand …   (payload on stdin)
+        └─ Import-Module ActiveDirectory
+             └─ ADWS :9389 ──▶ pinned DC
+```
+
+**Remote — `transport/ssh`.** The caller runs anywhere and reaches a Windows
+jump box over SSH.
+
+```
+caller (anywhere)
+   └─ ssh ──▶ jump box
+                └─ pwsh -EncodedCommand …   (payload on stdin)
+                     └─ Import-Module ActiveDirectory
+                          └─ ADWS :9389 ──▶ pinned DC
+```
+
+On Windows, an SSH session authenticated by public key receives a network logon
+token carrying no delegatable credentials, so onward authentication to ADWS
+fails — the classic double hop. Over SSH that is worked around with an explicit
+`Config.Credential`, which becomes `-Credential` on every cmdlet. On-host
+execution removes the problem instead of working around it, and
+`Config.Credential` remains available there for the case where the operations
+must authenticate as some account other than the one that launched the process.
+
+**Cost per operation, stated so it is not a surprise.** Every operation pays a
+fresh `Import-Module ActiveDirectory`, roughly 1–3 seconds on Windows. This is
+inherent to the one-shot-per-operation execution contract, and it is the same
+for both transports. `Concurrency` bounds how many run at once — 4 by default,
+because each is a real process with real memory cost.
 
 ## Example
 
@@ -68,29 +111,35 @@ These are enforced at the module boundary. A consumer cannot opt out of them.
 
 ## Extension seams
 
-- **`Transport`** is the only I/O seam. Two ship: `transport/ssh` (real) and
+- **`Transport`** is the only I/O seam. Three ship: `transport/local` (`pwsh` as
+  a child process of the caller), `transport/ssh` (a Windows jump box), and
   `transport/fake` (a programmable double plus `fake.Directory`, a small
   in-memory AD). Envelope parsing, error classification, retry and the
-  replication wait all live *above* it, so a future WinRM or local-`pwsh`
-  transport inherits every property above and no transport can reinterpret an AD
-  refusal as a transport failure.
+  replication wait all live *above* it, which is why `transport/local` inherited
+  every property above without restating one of them, and why a future WinRM
+  transport will too. No transport can reinterpret an AD refusal as a transport
+  failure.
 - **`Catalog`** will be the schema seam. It is not in this release; adding
   `Config.Catalog` later is additive.
 
-## Jump-box requirements
+## Windows requirements
 
-- A Windows member server (not a domain controller) reachable over SSH.
+Both transports need the same things of the Windows machine that runs `pwsh`:
+
+- A Windows **member server** — not a domain controller.
 - `RSAT-AD-PowerShell` installed.
 - PowerShell 7 (`pwsh`) on `PATH`. The scripts use `ConvertFrom-Json
   -AsHashtable` and the `?.` null-conditional operator, neither of which exists
   in Windows PowerShell 5.1.
-- OpenSSH Server running.
-- TCP 9389 open from the jump box to the domain controller (the AD Web Services
-  port the cmdlets use).
+- TCP 9389 open to the domain controller — the AD Web Services port the cmdlets
+  use.
 
-Host key verification is on by default. `insecure_ignore_host_key` is an
-explicit opt-out, and setting two host-key sources is a validation error rather
-than a silent precedence surprise.
+`transport/local` needs nothing further: the caller is already on that machine.
+
+`transport/ssh` additionally needs OpenSSH Server running on it, and TCP 22 open
+from wherever the caller runs. Host key verification is on by default;
+`insecure_ignore_host_key` is an explicit opt-out, and setting two host-key
+sources is a validation error rather than a silent precedence surprise.
 
 ## Stability
 
