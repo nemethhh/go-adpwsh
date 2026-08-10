@@ -67,7 +67,6 @@ func (c *Client) DefaultNamingContext() string { return c.core.dnc }
 // Close releases the transport.
 func (c *Client) Close() error { return c.core.tr.Close() }
 
-// Replaced in ou.go, group.go and user.go.
-type OUClient struct{ c *core }
+// Replaced in group.go and user.go.
 type GroupClient struct{ c *core }
 type UserClient struct{ c *core }
