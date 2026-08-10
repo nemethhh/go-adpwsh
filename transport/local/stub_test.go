@@ -71,7 +71,7 @@ func stubRecords(t *testing.T, path string) []stubRecord {
 	if err != nil {
 		t.Fatalf("cannot read the stub's records: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var out []stubRecord
 	scanner := bufio.NewScanner(f)
@@ -127,7 +127,7 @@ func (g *gateServer) serve() {
 			return
 		}
 		go func() {
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			g.mu.Lock()
 			g.open++
 			if g.open > g.maxOpen {
