@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -187,4 +188,70 @@ func TestLocalCancellationKillsTheChild(t *testing.T) {
 			t.Error("the child ran to completion; cancellation did not kill it")
 		}
 	}
+}
+
+// The semaphore is why Terraform's default parallelism of 10 cannot put ten
+// pwsh processes on the host at once. The gate observes the count rather than
+// inferring it from timing.
+func TestLocalBoundsConcurrentProcesses(t *testing.T) {
+	gate := newGateServer(t)
+	tr := newTransport(t, adlocal.Config{Concurrency: 2, Timeout: 30 * time.Second})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = tr.Run(context.Background(), "QQA=", nil)
+		}()
+	}
+
+	// Long enough for every runnable invocation to reach the gate, so a broken
+	// bound has time to show itself.
+	time.Sleep(750 * time.Millisecond)
+	if got := gate.MaxOpen(); got > 2 {
+		t.Errorf("%d stubs were inside the gate at once, want at most 2", got)
+	}
+
+	gate.Release()
+	wg.Wait()
+	if got := gate.MaxOpen(); got > 2 {
+		t.Errorf("%d stubs ran at once over the whole run, want at most 2", got)
+	}
+	if got := gate.MaxOpen(); got < 2 {
+		t.Errorf("only %d stub ran at once; the bound is throttling below its own limit", got)
+	}
+}
+
+// A context that expires while every slot is taken must return, not block for
+// the whole transport timeout.
+func TestLocalRespectsCancellationWhileWaitingForASlot(t *testing.T) {
+	gate := newGateServer(t)
+	tr := newTransport(t, adlocal.Config{Concurrency: 1, Timeout: 30 * time.Second})
+
+	go func() { _, _ = tr.Run(context.Background(), "QQA=", nil) }()
+	// Let the first Run take the only slot and reach the gate.
+	for i := 0; i < 100 && gate.MaxOpen() == 0; i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if gate.MaxOpen() == 0 {
+		t.Fatal("the first Run never reached the gate")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := tr.Run(ctx, "QQA=", nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Run must return when the context expires while it waits for a slot")
+	}
+	if !errors.Is(err, adpwsh.ErrTransport) {
+		t.Errorf("want KindTransport, got %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Run waited %s for a slot; it must honour the context", elapsed)
+	}
+	gate.Release()
 }
