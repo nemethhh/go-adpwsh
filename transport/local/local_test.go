@@ -255,3 +255,95 @@ func TestLocalRespectsCancellationWhileWaitingForASlot(t *testing.T) {
 	}
 	gate.Release()
 }
+
+func TestLocalStartsTheChildInWorkingDir(t *testing.T) {
+	records := recordFile(t)
+	dir := t.TempDir()
+
+	tr := newTransport(t, adlocal.Config{WorkingDir: dir})
+	if _, err := tr.Run(context.Background(), "QQA=", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	recs := stubRecords(t, records)
+	if len(recs) == 0 {
+		t.Fatal("the stub recorded nothing")
+	}
+	// TempDir can sit under a symlinked path — /var on macOS is /private/var —
+	// so compare resolved paths rather than the strings.
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := filepath.EvalSymlinks(recs[0].Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("the child started in %q, want %q", got, want)
+	}
+}
+
+// Close exists to satisfy the interface. It releases nothing, so it is
+// idempotent and the transport is still usable after it — which is what makes
+// a client's deferred Close harmless.
+func TestCloseIsANoOpAndRepeatable(t *testing.T) {
+	tr := newTransport(t, adlocal.Config{})
+	if err := tr.Close(); err != nil {
+		t.Errorf("Close = %v, want nil", err)
+	}
+	if err := tr.Close(); err != nil {
+		t.Errorf("second Close = %v, want nil", err)
+	}
+	if _, err := tr.Run(context.Background(), "QQA=", nil); err != nil {
+		t.Errorf("Run after Close = %v", err)
+	}
+}
+
+// The transport parses nothing: the envelope, the classification and the pinned
+// domain controller all come from above the seam. Configuring a real client
+// through the stub is what proves the seam holds.
+func TestClientConfiguresThroughTheLocalTransport(t *testing.T) {
+	t.Setenv("PWSHSTUB_STDOUT", "<<<TFAD:BEGIN>>>\r\n"+
+		`{"ok":true,"data":{"dnsHostName":"dc01.corp.local",`+
+		`"defaultNamingContext":"DC=corp,DC=local",`+
+		`"schemaNamingContext":"CN=Schema,CN=Configuration,DC=corp,DC=local"}}`+
+		"\r\n<<<TFAD:END>>>\r\n")
+
+	tr := newTransport(t, adlocal.Config{})
+	client, err := adpwsh.New(context.Background(), adpwsh.Config{Transport: tr})
+	if err != nil {
+		t.Fatalf("adpwsh.New over the local transport: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if client.Server() != "dc01.corp.local" {
+		t.Errorf("Server = %q, want dc01.corp.local", client.Server())
+	}
+	if client.DefaultNamingContext() != "DC=corp,DC=local" {
+		t.Errorf("DefaultNamingContext = %q", client.DefaultNamingContext())
+	}
+}
+
+// A pwsh that produced no envelope is a transport failure, decided above the
+// seam. The transport itself must not have looked at the output at all.
+func TestMissingEnvelopeIsATransportFailureAboveTheSeam(t *testing.T) {
+	t.Setenv("PWSHSTUB_STDOUT", "Import-Module : The specified module was not loaded.")
+	t.Setenv("PWSHSTUB_EXIT", "1")
+
+	tr := newTransport(t, adlocal.Config{})
+	// Run itself must succeed: a non-zero exit is data.
+	res, err := tr.Run(context.Background(), "QQA=", nil)
+	if err != nil {
+		t.Fatalf("Run must not error on a non-zero exit: %v", err)
+	}
+	if res.ExitCode != 1 {
+		t.Fatalf("ExitCode = %d, want 1", res.ExitCode)
+	}
+	// The client is what refuses it, and it refuses it as a transport failure.
+	if _, err := adpwsh.New(context.Background(), adpwsh.Config{Transport: tr}); err == nil {
+		t.Fatal("adpwsh.New must fail when pwsh produced no envelope")
+	} else if !errors.Is(err, adpwsh.ErrTransport) {
+		t.Errorf("want KindTransport, got %v", err)
+	}
+}
