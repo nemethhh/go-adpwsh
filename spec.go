@@ -160,3 +160,67 @@ func (s GroupSpec) validate(op string, forCreate bool) error {
 	}
 	return nil
 }
+
+// UserSpec is the desired state of a user account.
+type UserSpec struct {
+	SamAccountName    string  // required on create
+	Container         string  // required on create; a change means Move-ADObject
+	Name              *string // the CN; defaults to SamAccountName on create; a change means Rename-ADObject
+	UserPrincipalName *string
+	DisplayName       *string
+	GivenName         *string
+	Surname           *string
+	Description       *string
+
+	Enabled               *bool
+	Password              *Secret
+	ChangePasswordAtLogon *bool
+	CanChangePassword     *bool
+	PasswordExpires       *bool
+	AccountExpiration     OptTime
+}
+
+// userTier1 is the hand-written field → (cmdlet parameter, LDAP name) mapping.
+// Fifteen rows per resource is a table, not a generator's job; the lab's
+// Get-Command fixture asserts the parameter names against the installed module.
+// Surname's LDAP name is sn, which is the row this table exists for.
+var userTier1 = []struct {
+	Param string
+	LDAP  string
+	Get   func(UserSpec) *string
+}{
+	{"UserPrincipalName", "userPrincipalName", func(s UserSpec) *string { return s.UserPrincipalName }},
+	{"DisplayName", "displayName", func(s UserSpec) *string { return s.DisplayName }},
+	{"GivenName", "givenName", func(s UserSpec) *string { return s.GivenName }},
+	{"Surname", "sn", func(s UserSpec) *string { return s.Surname }},
+	{"Description", "description", func(s UserSpec) *string { return s.Description }},
+}
+
+var errEmptyPassword = errors.New("an empty password cannot be set")
+
+func (s UserSpec) validate(op string) error {
+	if s.SamAccountName == "" {
+		return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf("SamAccountName is required")}
+	}
+	if err := validateContainer(op, s.Container); err != nil {
+		return err
+	}
+	if s.AccountExpiration.IsSet() && s.AccountExpiration.IsClear() {
+		return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf("AccountExpiration cannot both set and clear")}
+	}
+	// Correctness rule 7. AD accepts these combinations and then behaves in a
+	// way nobody asked for, so they are refused before a round trip.
+	if s.ChangePasswordAtLogon != nil && *s.ChangePasswordAtLogon {
+		if s.PasswordExpires != nil && !*s.PasswordExpires {
+			return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf(
+				"change_password_at_logon cannot be true while password_expires is false: " +
+					"AD cannot require a change of a password that never expires")}
+		}
+		if s.CanChangePassword != nil && !*s.CanChangePassword {
+			return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf(
+				"change_password_at_logon cannot be true while can_change_password is false: " +
+					"the user would be required to do what they are denied")}
+		}
+	}
+	return nil
+}
