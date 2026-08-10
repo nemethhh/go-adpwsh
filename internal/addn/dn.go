@@ -181,6 +181,12 @@ func (d *DN) String() string {
 	return sb.String()
 }
 
+// EscapeValue is the exported spelling, for a caller that assembles an RDN
+// instead of rendering a parsed DN. Building "OU=" + name + "," + parent by
+// concatenation is correct right up to the first name containing a comma, at
+// which point the name silently reparents the object.
+func EscapeValue(v string) string { return escapeValue(v) }
+
 // escapeValue applies RFC 4514 §2.4: the set ",+\"\\<>;=" is escaped
 // everywhere, a leading '#' or space and a trailing space are escaped, and a
 // NUL becomes \00.

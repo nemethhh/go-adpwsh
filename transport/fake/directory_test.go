@@ -56,6 +56,48 @@ func TestDirectoryFullOULifecycle(t *testing.T) {
 	}
 }
 
+// A name containing a comma is one RDN, not two. Concatenating it into a DN
+// produces a string whose parent parses as "EMEA,DC=corp,DC=local", so the
+// object reads back as living somewhere it does not — and a consumer that
+// nests anything under it inherits the wrong container.
+func TestDirectoryEscapesACommaInAnRDN(t *testing.T) {
+	c, _ := newClient(t)
+	ctx := context.Background()
+
+	ou, err := c.OU.Create(ctx, adpwsh.OUSpec{Name: "Sales, EMEA", Container: "DC=corp,DC=local"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if want := `OU=Sales\, EMEA,DC=corp,DC=local`; ou.DN != want {
+		t.Errorf("DN = %q, want %q", ou.DN, want)
+	}
+	if ou.Container != "DC=corp,DC=local" {
+		t.Errorf("Container = %q, want DC=corp,DC=local", ou.Container)
+	}
+
+	// The escaped DN must still work as another object's container.
+	g, err := c.Group.Create(ctx, adpwsh.GroupSpec{
+		Name: "Reps", SamAccountName: "reps", Container: ou.DN, Scope: adpwsh.GroupScopeGlobal,
+	})
+	if err != nil {
+		t.Fatalf("Group.Create in an escaped container: %v", err)
+	}
+	if g.Container != ou.DN {
+		t.Errorf("group container = %q, want %q", g.Container, ou.DN)
+	}
+
+	// And a rename into a comma-bearing name must escape too.
+	renamed, err := c.OU.Update(ctx, adpwsh.ByGUID(ou.GUID), adpwsh.OUSpec{
+		Name: "Sales, APAC", Container: "DC=corp,DC=local",
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if want := `OU=Sales\, APAC,DC=corp,DC=local`; renamed.DN != want {
+		t.Errorf("renamed DN = %q, want %q", renamed.DN, want)
+	}
+}
+
 func TestDirectoryEnforcesUniquenessAndChildren(t *testing.T) {
 	c, _ := newClient(t)
 	ctx := context.Background()

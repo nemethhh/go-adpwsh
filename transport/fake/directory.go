@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/nemethhh/go-adpwsh/internal/addn"
 )
 
 // DirectoryObject is one object in the fake directory.
@@ -169,11 +171,20 @@ func rdnPrefix(class string) string {
 	return "CN="
 }
 
+// buildDN names an object the way a directory does: the RDN value is escaped
+// per RFC 4514, so a name containing a comma stays one component. Real AD
+// never returns "OU=Sales, EMEA,DC=corp,DC=local" — it returns
+// "OU=Sales\, EMEA,DC=corp,DC=local" — and a fake that concatenates instead
+// hands its consumer a DN whose parent parses as "EMEA,DC=corp,DC=local".
+func buildDN(class, name, container string) string {
+	return rdnPrefix(class) + addn.EscapeValue(name) + "," + container
+}
+
 func (d *Directory) handleCreate(c Call, class string) Response {
 	create := splat(c.Payload, "create")
 	name := asString(create["Name"])
 	container := asString(create["Path"])
-	dn := rdnPrefix(class) + name + "," + container
+	dn := buildDN(class, name, container)
 
 	for _, o := range d.objects {
 		if strings.EqualFold(o.DN, dn) && !o.Deleted {
@@ -300,11 +311,11 @@ func (d *Directory) handleUpdate(c Call) Response {
 	}
 	if rename := splat(c.Payload, "rename"); rename != nil {
 		o.Data["name"] = asString(rename["NewName"])
-		o.DN = rdnPrefix(o.Class) + asString(rename["NewName"]) + "," + parentOf(o.DN)
+		o.DN = buildDN(o.Class, asString(rename["NewName"]), parentOf(o.DN))
 		o.Data["distinguishedName"] = o.DN
 	}
 	if move := splat(c.Payload, "move"); move != nil {
-		o.DN = rdnPrefix(o.Class) + asString(o.Data["name"]) + "," + asString(move["TargetPath"])
+		o.DN = buildDN(o.Class, asString(o.Data["name"]), asString(move["TargetPath"]))
 		o.Data["distinguishedName"] = o.DN
 	}
 	return OK(d.project(o))
@@ -409,7 +420,7 @@ func (d *Directory) Seed(class, name, container string, data map[string]any) str
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	guid := d.nextGUID()
-	dn := rdnPrefix(class) + name + "," + container
+	dn := buildDN(class, name, container)
 	obj := &DirectoryObject{GUID: guid, Class: class, DN: dn, Data: map[string]any{
 		"objectGUID": guid, "distinguishedName": dn, "name": name,
 	}}
