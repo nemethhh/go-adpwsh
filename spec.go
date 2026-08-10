@@ -121,3 +121,42 @@ func withIdentity(err error, op string, id Identity) error {
 	}
 	return err
 }
+
+// GroupSpec is the desired state of a group.
+type GroupSpec struct {
+	Name           string // the CN; a change means Rename-ADObject
+	SamAccountName string // required; changes through Set-ADGroup
+	Container      string // parent DN; a change means Move-ADObject
+	Scope          GroupScope
+	Category       GroupCategory // defaults to security
+	Description    *string
+	ManagedBy      *string
+}
+
+func (s GroupSpec) validate(op string, forCreate bool) error {
+	if err := validateName(op, s.Name); err != nil {
+		return err
+	}
+	if s.SamAccountName == "" {
+		return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf("SamAccountName is required")}
+	}
+	if err := validateContainer(op, s.Container); err != nil {
+		return err
+	}
+	// -GroupScope is a mandatory parameter of New-ADGroup, so there is no
+	// meaningful default to fall back on.
+	if forCreate && s.Scope == "" {
+		return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf("Scope is required (global, domainlocal or universal)")}
+	}
+	if s.Scope != "" {
+		if _, ok := s.Scope.cmdletValue(); !ok {
+			return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf("Scope %q is not one of global, domainlocal, universal", s.Scope)}
+		}
+	}
+	if s.Category != "" {
+		if _, ok := s.Category.cmdletValue(); !ok {
+			return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf("Category %q is not one of security, distribution", s.Category)}
+		}
+	}
+	return nil
+}
