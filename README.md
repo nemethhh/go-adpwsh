@@ -128,6 +128,9 @@ These are enforced at the module boundary. A consumer cannot opt out of them.
 `make schema` writes `schema/catalog.json`, a machine-readable catalog of an
 Active Directory schema: every attribute's type and constraints, and, for each
 class it covers, that class's **effective** set of allowed attributes.
+`schema.Baseline()` reads the copy committed with this module, so a consumer
+reaches a stock catalog with nothing beyond an import — no domain, no
+transport, no separate download.
 
 Effective, not declared, is the whole point. An object's legal attributes are
 the union — across the entire inheritance closure — of `mayContain`,
@@ -154,23 +157,31 @@ export time, so a stale or foreign catalog is identifiable without diffing it.
 ### Regenerating
 
 Regenerate after any schema extension, and to produce a catalog for your own
-forest. The exporter runs over the same transports the library itself uses, so
-it runs from wherever you already run this module:
+forest. Run the exporter directly on the Windows host that has
+RSAT-AD-PowerShell — Windows generally has no `make`, so the instruction there
+is `go run`, not `make schema`:
 
 ```bash
-# On the Windows host that has RSAT-AD-PowerShell:
-make schema ADSCHEMA_FLAGS='--transport local'
-
-# Or from anywhere, over SSH to that host:
-make schema ADSCHEMA_FLAGS="--transport ssh \
-  --ssh-host 192.168.50.31 --ssh-user Administrator \
-  --ssh-private-key-path ~/.ssh/id_ed25519 --ssh-known-hosts ~/.ssh/known_hosts \
-  --ad-username 'CORP\svc_reader' --ad-password-env AD_PW"
+go run ./cmd/adschema export --transport local \
+  --server dc01.corp.local --out schema/catalog.json
 ```
 
+`--transport ssh` cannot carry this export today. `transport/ssh` sends the
+composed script inline as `pwsh -EncodedCommand <base64>`; base64-of-UTF-16
+runs about 2.7x the size of the source, and the schema fetch's script — the
+largest this library sends — exceeds the roughly 8,191-character command-line
+limit of `cmd.exe`, the shell behind sshd's `DefaultShell` on a Windows host.
+The host answers "The command line is too long." That is a library defect,
+recorded as follow-up work rather than fixed here: regenerate on the host
+itself until it is.
+
 `make schema-check` regenerates to a temporary file and diffs, which proves the
-committed catalog still matches the domain. It needs a reachable domain, so it
-is not part of `make test`.
+committed catalog still matches the domain — but it drives the exporter the
+same way `make schema` does, so it inherits the same limitation and cannot run
+from anywhere but the Windows host itself. Proving the property there means
+exporting twice, passing `--exported-at` set to the committed file's own
+`source.exportedAt` both times (so the diff is of the schema, not the clock),
+and comparing the two results byte for byte.
 
 `adschema export --classes all` resolves every structural class instead of the
 three the provider manages (`organizationalUnit`, `group`, `user`). It costs
