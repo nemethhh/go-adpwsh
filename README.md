@@ -119,16 +119,15 @@ These are enforced at the module boundary. A consumer cannot opt out of them.
   every property above without restating one of them, and why a future WinRM
   transport will too. No transport can reinterpret an AD refusal as a transport
   failure.
-- **`Catalog`** will be the schema seam. The *data* has landed —
-  `schema.Catalog`, and a committed baseline in `schema/catalog.json` — but
-  `Config.Catalog` has not; adding it later is additive.
+- **`Catalog`** will be the schema seam. The types have landed — `schema.Catalog`
+  and its reader — and `make schema` produces the catalog they read; `Config.Catalog`
+  has not, and adding it later is additive.
 
 ## The schema catalog
 
-`schema/catalog.json` is a machine-readable catalog of an Active Directory
-schema: every attribute's type and constraints, and, for each class it covers,
-that class's **effective** set of allowed attributes. `schema.Baseline()` reads
-the copy committed with this module.
+`make schema` writes `schema/catalog.json`, a machine-readable catalog of an
+Active Directory schema: every attribute's type and constraints, and, for each
+class it covers, that class's **effective** set of allowed attributes.
 
 Effective, not declared, is the whole point. An object's legal attributes are
 the union — across the entire inheritance closure — of `mayContain`,
