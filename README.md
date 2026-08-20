@@ -119,8 +119,69 @@ These are enforced at the module boundary. A consumer cannot opt out of them.
   every property above without restating one of them, and why a future WinRM
   transport will too. No transport can reinterpret an AD refusal as a transport
   failure.
-- **`Catalog`** will be the schema seam. It is not in this release; adding
-  `Config.Catalog` later is additive.
+- **`Catalog`** will be the schema seam. The *data* has landed —
+  `schema.Catalog`, and a committed baseline in `schema/catalog.json` — but
+  `Config.Catalog` has not; adding it later is additive.
+
+## The schema catalog
+
+`schema/catalog.json` is a machine-readable catalog of an Active Directory
+schema: every attribute's type and constraints, and, for each class it covers,
+that class's **effective** set of allowed attributes. `schema.Baseline()` reads
+the copy committed with this module.
+
+Effective, not declared, is the whole point. An object's legal attributes are
+the union — across the entire inheritance closure — of `mayContain`,
+`systemMayContain`, `mustContain` and `systemMustContain`. The closure follows
+`subClassOf` up to `top` and, at every step, `auxiliaryClass` and
+`systemAuxiliaryClass` transitively. Against a stock Windows Server 2025 schema,
+reading `mayContain` off the class itself reports 31 attributes for
+`organizationalUnit` where the answer is 160, 25 for `group` where it is 192,
+and 159 for `user` where it is 406 — and it under-reports, so a validator built
+that way rejects attributes Active Directory accepts.
+
+`via` records which class contributed each attribute, so "why is this attribute
+allowed here?" is answered by the file rather than by re-deriving the closure.
+
+### The committed catalog is a stock baseline, not an authority
+
+It was exported from an unextended forest. Exchange, Skype for Business and
+Configuration Manager each add hundreds of attributes and several auxiliary
+classes to the schema they extend — Exchange alone adds roughly a thousand
+attributes. A consumer that trusts this baseline on an extended forest will
+under-report. `source` names the domain, forest mode, schema `objectVersion` and
+export time, so a stale or foreign catalog is identifiable without diffing it.
+
+### Regenerating
+
+Regenerate after any schema extension, and to produce a catalog for your own
+forest. The exporter runs over the same transports the library itself uses, so
+it runs from wherever you already run this module:
+
+```bash
+# On the Windows host that has RSAT-AD-PowerShell:
+make schema ADSCHEMA_FLAGS='--transport local'
+
+# Or from anywhere, over SSH to that host:
+make schema ADSCHEMA_FLAGS="--transport ssh \
+  --ssh-host 192.168.50.31 --ssh-user Administrator \
+  --ssh-private-key-path ~/.ssh/id_ed25519 --ssh-known-hosts ~/.ssh/known_hosts \
+  --ad-username 'CORP\svc_reader' --ad-password-env AD_PW"
+```
+
+`make schema-check` regenerates to a temporary file and diffs, which proves the
+committed catalog still matches the domain. It needs a reachable domain, so it
+is not part of `make test`.
+
+`adschema export --classes all` resolves every structural class instead of the
+three the provider manages (`organizationalUnit`, `group`, `user`). It costs
+nothing beyond output size, and the committed baseline deliberately uses the
+default. A password is read from the environment variable named by
+`--ad-password-env`, never from a flag, because argv is visible in the host's
+process list.
+
+The exporter only reads. Extending a schema is irreversible and forest-wide, and
+no tool here makes it easy.
 
 ## Windows requirements
 
