@@ -182,7 +182,11 @@ func (ix *index) closure(start *RawClass) (map[string]*contribution, error) {
 // The contributor kept is the one nearest the exported class, measured in steps
 // through the closure, with ties broken by name ascending. The rule exists so
 // the output is reproducible, not because the nearest contributor is more
-// truthful than another.
+// truthful than another: on real data it regularly names a class no operator
+// would call the explanation — in the committed baseline, user's mandatory cn
+// is attributed to mailRecipient (an auxiliary mail class one step away) over
+// person (two steps up), and user's description to posixAccount — so treat
+// via as "which class won the tie-break", not "why AD grants the attribute".
 //
 // Mandatory wins wherever both occur: a class cannot relax a must-contain it
 // inherits, so an attribute contributed as mustContain anywhere in the closure

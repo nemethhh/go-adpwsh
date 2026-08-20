@@ -1,0 +1,7 @@
+# These files are compared byte-for-byte (make schema-check; the -update and
+# -update-golden test flags), so they must always check out as LF even when
+# core.autocrlf=true — the README has operators regenerate schema/catalog.json
+# on a Windows host.
+schema/catalog.json text eol=lf
+internal/adschema/testdata/golden/catalog.json text eol=lf
+*.ps1 text eol=lf

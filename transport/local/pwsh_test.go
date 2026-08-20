@@ -260,7 +260,7 @@ Write-Output 'unreachable'
 		t.Errorf("stderr should name the module pwsh could not load: %q", res.Stderr)
 	}
 	// No envelope: the script died before the epilogue could write one. This is
-	// exactly the input parseEnvelope must classify as KindTransport.
+	// exactly the input ParseEnvelope must classify as KindTransport.
 	if strings.Contains(res.Stdout, "<<<TFAD:BEGIN>>>") {
 		t.Error("a script that died before the epilogue must not have produced an envelope")
 	}

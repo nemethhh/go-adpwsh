@@ -16,6 +16,18 @@ var effectiveFloor = map[string]int{
 	"user":               406,
 }
 
+// attributeCountFloor guards the size of the *whole* attribute collection,
+// not any one class's effective set. Fetch's truncation guard only rejects
+// an empty collection, and the per-class floors below only exercise the
+// ~428 attributes the three exported classes reach between them — a fetch
+// that silently returned just that subset of attributeSchema would still
+// satisfy every other check in checkInvariants. This is comfortably below
+// the 1,507 a stock Windows Server 2025 schema carries (and below
+// TestBaselineMeetsTheInvariants's own, tighter, baseline-only check of
+// 1,500 — that one pins a known exact export; this one is the floor
+// checkInvariants applies to *any* catalog, baseline or freshly fetched).
+const attributeCountFloor = 1000
+
 // checkInvariants asserts everything that must be true of any catalog, from any
 // forest. It is called with a freshly exported catalog by the lab test and with
 // the committed baseline by a test that needs no domain — one set of
@@ -80,6 +92,12 @@ func checkInvariants(t *testing.T, cat *schema.Catalog) {
 		if !a.SystemOnly {
 			t.Errorf("%s must be systemOnly", name)
 		}
+	}
+
+	if got := len(cat.Attributes); got < attributeCountFloor {
+		t.Errorf("catalog carries %d attributes, want at least %d — a fetch that returned only "+
+			"a subset of attributeSchema could still satisfy every per-class floor below, since "+
+			"those only cover the attributes the three exported classes reach", got, attributeCountFloor)
 	}
 
 	for class, floor := range effectiveFloor {
