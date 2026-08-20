@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -124,5 +126,91 @@ func TestRenderAddsTheTargetAndTheRemedy(t *testing.T) {
 	}
 	if got := render(errors.New("plain")); got != "plain" {
 		t.Errorf("a plain error must pass through: %q", got)
+	}
+}
+
+// writeFileAtomic is what guarantees a failed export never leaves a truncated
+// catalog behind, because the next thing that reads the file is a commit.
+// These three cases pin: the success path leaves exactly the one file behind
+// (no leaked sibling temp file), a failure before any temp file could be
+// created leaves nothing behind, and a failure after the temp file exists
+// (rename losing to a name collision) still leaves nothing behind.
+
+func TestWriteFileAtomicSuccessLeavesExactlyOneFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "catalog.json")
+	body := []byte(`{"hello":"world"}` + "\n")
+
+	if err := writeFileAtomic(path, body); err != nil {
+		t.Fatalf("writeFileAtomic: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	if string(got) != string(body) {
+		t.Errorf("file content = %q, want %q", got, body)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", dir, err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "catalog.json" {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("directory contents = %v, want exactly [catalog.json] — a leaked temp file would show up here", names)
+	}
+}
+
+func TestWriteFileAtomicFailureBeforeATempFileExistsLeavesNothingBehind(t *testing.T) {
+	dir := t.TempDir()
+	missingSubdir := filepath.Join(dir, "does-not-exist")
+	path := filepath.Join(missingSubdir, "catalog.json")
+
+	err := writeFileAtomic(path, []byte("irrelevant"))
+	if err == nil {
+		t.Fatal("writing into a nonexistent directory must fail")
+	}
+	if !strings.Contains(err.Error(), missingSubdir) {
+		t.Errorf("error = %q, want it to name the directory %q", err, missingSubdir)
+	}
+	if _, statErr := os.Stat(missingSubdir); !os.IsNotExist(statErr) {
+		t.Errorf("the directory must still not exist, got stat err = %v", statErr)
+	}
+}
+
+// This is the branch where a temp file was already created, written and
+// closed before the failure — a rename losing to an existing directory of
+// the same name — so cleanup depends on the explicit os.Remove, not on the
+// temp file never having existed in the first place.
+func TestWriteFileAtomicRenameFailureLeavesNoTempFileBehind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("Mkdir(%s): %v", path, err)
+	}
+
+	err := writeFileAtomic(path, []byte("irrelevant"))
+	if err == nil {
+		t.Fatal("renaming a file onto an existing directory must fail")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error = %q, want it to name %q", err, path)
+	}
+
+	entries, rdErr := os.ReadDir(dir)
+	if rdErr != nil {
+		t.Fatalf("ReadDir(%s): %v", dir, rdErr)
+	}
+	if len(entries) != 1 || entries[0].Name() != "target" {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("directory contents = %v, want exactly [target] — a leaked temp file would show up here", names)
 	}
 }
