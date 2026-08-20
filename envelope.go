@@ -28,11 +28,17 @@ type envelopeError struct {
 	ServerErrorMessage string `json:"serverErrorMessage"`
 }
 
-// parseEnvelope turns one raw Result into either the operation's data or a
+// ParseEnvelope turns one raw Result into either the operation's data or a
 // classified *Error. A non-zero exit or a missing envelope is KindTransport:
 // the script exits 0 even when AD refuses, so anything else means the
 // transport or the pwsh process itself failed.
-func parseEnvelope(op string, r Result) (json.RawMessage, error) {
+//
+// It is exported for the build-time tooling in this module that needs a query
+// the op set does not expose — cmd/adschema — so that such a tool inherits
+// this library's error classification instead of inventing its own. It
+// confers no ability to run script text: the caller must already hold a
+// Result.
+func ParseEnvelope(op string, r Result) (json.RawMessage, error) {
 	if r.ExitCode != 0 {
 		return nil, &Error{
 			Kind: KindTransport,

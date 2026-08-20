@@ -11,9 +11,9 @@ func env(body string) string {
 }
 
 func TestParseEnvelopeSuccess(t *testing.T) {
-	raw, err := parseEnvelope("OU.Get", Result{Stdout: env(`{"ok":true,"data":{"name":"Staff"}}`)})
+	raw, err := ParseEnvelope("OU.Get", Result{Stdout: env(`{"ok":true,"data":{"name":"Staff"}}`)})
 	if err != nil {
-		t.Fatalf("parseEnvelope: %v", err)
+		t.Fatalf("ParseEnvelope: %v", err)
 	}
 	if string(raw) != `{"name":"Staff"}` {
 		t.Errorf("data = %s", raw)
@@ -28,9 +28,9 @@ func TestParseEnvelopeToleratesNoise(t *testing.T) {
 		`{"ok":true,"data":{"name":"Staff"}}` + "\r\n" +
 		"<<<TFAD:END>>>\r\n" +
 		"trailing junk\r\n"
-	raw, err := parseEnvelope("OU.Get", Result{Stdout: stdout})
+	raw, err := ParseEnvelope("OU.Get", Result{Stdout: stdout})
 	if err != nil {
-		t.Fatalf("parseEnvelope: %v", err)
+		t.Fatalf("ParseEnvelope: %v", err)
 	}
 	if string(raw) != `{"name":"Staff"}` {
 		t.Errorf("data = %s", raw)
@@ -51,7 +51,7 @@ func TestParseEnvelopeTransportFailures(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := parseEnvelope("OU.Get", tt.res)
+			_, err := ParseEnvelope("OU.Get", tt.res)
 			if err == nil {
 				t.Fatal("expected an error")
 			}
@@ -74,7 +74,7 @@ func TestParseEnvelopeADRefusal(t *testing.T) {
 		`"category":"ObjectNotFound","targetName":"nope",` +
 		`"fqid":"ActiveDirectoryCmdlet:…,Microsoft.ActiveDirectory.Management.Commands.GetADUser",` +
 		`"errorCode":8333,"serverErrorMessage":"0000208D: NameErr"}}`
-	_, err := parseEnvelope("User.Get", Result{Stdout: env(body)})
+	_, err := ParseEnvelope("User.Get", Result{Stdout: env(body)})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Kind mismatch: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestParseEnvelopeWithoutErrorCode(t *testing.T) {
 	body := `{"ok":false,"error":{"type":"Microsoft.ActiveDirectory.Management.ADServerDownException",` +
 		`"message":"Unable to contact the server","category":"ResourceUnavailable",` +
 		`"targetName":"","fqid":"","errorCode":null,"serverErrorMessage":null}}`
-	_, err := parseEnvelope("User.Get", Result{Stdout: env(body)})
+	_, err := ParseEnvelope("User.Get", Result{Stdout: env(body)})
 	if !errors.Is(err, ErrTransient) {
 		t.Fatalf("want KindTransient, got %v", err)
 	}

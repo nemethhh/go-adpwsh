@@ -63,7 +63,7 @@ func (c *core) exec(ctx context.Context, op string, payload map[string]any, out 
 		if runErr != nil {
 			lastErr = asError(op, runErr)
 		} else {
-			data, lastErr = parseEnvelope(op, res)
+			data, lastErr = ParseEnvelope(op, res)
 		}
 		if lastErr == nil {
 			if out == nil || len(data) == 0 {
