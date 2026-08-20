@@ -86,19 +86,23 @@ func TestResolveFollowsAuxiliaryClassesAndTheirParents(t *testing.T) {
 // then name ascending.
 func TestResolveDeduplicatesADiamond(t *testing.T) {
 	raw := &Raw{
-		Attributes: attrs("cn", "shared"),
+		Attributes: attrs("cn", "shared", "aOnly"),
 		Classes: []RawClass{
 			{Name: "top", Category: 2, SubClassOf: "top", SystemMayContain: []string{"cn"}},
 			{Name: "securityPrincipal", Category: 3, SubClassOf: "top", MayContain: []string{"shared"}},
 			// Both auxiliaries pull in securityPrincipal, and both sit one step
-			// from user, so the tie-break by name decides.
+			// from user — bAux through auxiliaryClass, aAux through
+			// systemAuxiliaryClass — so the tie-break by name decides. aAux also
+			// contributes aOnly, which nothing else does: dropping the
+			// systemAuxiliaryClass edge would lose an attribute outright, not
+			// merely rename a via entry.
 			{Name: "bAux", Category: 3, SubClassOf: "top", AuxiliaryClass: []string{"securityPrincipal"}, MayContain: []string{"shared"}},
-			{Name: "aAux", Category: 3, SubClassOf: "top", AuxiliaryClass: []string{"securityPrincipal"}, MayContain: []string{"shared"}},
-			{Name: "user", Category: 1, SubClassOf: "top", AuxiliaryClass: []string{"bAux", "aAux"}},
+			{Name: "aAux", Category: 3, SubClassOf: "top", AuxiliaryClass: []string{"securityPrincipal"}, MayContain: []string{"shared", "aOnly"}},
+			{Name: "user", Category: 1, SubClassOf: "top", AuxiliaryClass: []string{"bAux"}, SystemAuxiliaryClass: []string{"aAux"}},
 		},
 	}
 	_, optional, via := effective(t, raw, "user")
-	if want := []string{"cn", "shared"}; !equal(optional, want) {
+	if want := []string{"aOnly", "cn", "shared"}; !equal(optional, want) {
 		t.Errorf("optional = %v, want %v (an attribute must appear once)", optional, want)
 	}
 	if via["shared"] != "aAux" {
@@ -156,6 +160,25 @@ func TestResolveRejectsAClassMissingFromTheMap(t *testing.T) {
 	_, err := Resolve(raw, []string{"user"})
 	if err == nil || !strings.Contains(err.Error(), "ghostClass") {
 		t.Fatalf("want a fatal error naming ghostClass, got %v", err)
+	}
+}
+
+// An empty subClassOf is not a root — top is the only class whose subClassOf
+// legitimately terminates the walk, and it does so by naming itself, never by
+// naming nothing. [string]$null decodes to "" in the fetch fragment, so a
+// class whose parent the directory did not return arrives exactly this way;
+// treating "" as "no parent" would silently truncate the closure, which is the
+// one failure this task exists to make impossible.
+func TestResolveRejectsAnEmptySubClassOf(t *testing.T) {
+	raw := &Raw{
+		Attributes: attrs("cn"),
+		Classes: []RawClass{
+			{Name: "user", Category: 1, SubClassOf: "", MayContain: []string{"cn"}},
+		},
+	}
+	_, err := Resolve(raw, []string{"user"})
+	if err == nil || !strings.Contains(err.Error(), `refers to class "", which the fetch did not return`) {
+		t.Fatalf("want a fatal error naming the empty subClassOf, got %v", err)
 	}
 }
 

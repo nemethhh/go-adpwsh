@@ -160,9 +160,6 @@ func (ix *index) closure(start *RawClass) (map[string]*contribution, error) {
 		next = append(next, cl.SystemAuxiliaryClass...)
 
 		for _, name := range next {
-			if name == "" {
-				continue
-			}
 			f := fold(name)
 			if visited[f] {
 				continue
