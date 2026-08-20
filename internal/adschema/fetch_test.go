@@ -139,6 +139,48 @@ func TestFetchTreatsAMissingEnvelopeAsTransport(t *testing.T) {
 	}
 }
 
+// A transport that classified its own failure keeps its Kind. Flattening a
+// retryable channel exhaustion into a non-retryable transport error is the
+// regression this pins.
+//
+// errors.Is alone cannot pin this: a re-wrap that discards the branch still
+// nests the original *Error as the wrapper's Err, and errors.Is keeps
+// unwrapping until it finds a match anywhere in the chain — so it would
+// report ErrTransient present even after the regression. What a retry loop
+// actually consults is errors.As's first match, which is the outermost
+// *Error, so the assertions below check that one's Kind and Op directly.
+func TestFetchKeepsATransportsOwnKind(t *testing.T) {
+	tr := fake.New(func(fake.Call) fake.Response {
+		return fake.Response{RunErr: &adpwsh.Error{
+			Kind: adpwsh.KindTransient, Op: "ssh.Run",
+			Err: errors.New("cannot open a session channel"),
+		}}
+	})
+	_, err := Fetch(context.Background(), tr, FetchOptions{})
+	var e *adpwsh.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("want an *adpwsh.Error, got %v", err)
+	}
+	if e.Kind != adpwsh.KindTransient {
+		t.Errorf("Kind = %v, want KindTransient", e.Kind)
+	}
+	if e.Op != "ssh.Run" {
+		t.Errorf("Op = %q; Fetch must return the transport's own *Error unchanged, not re-wrap it", e.Op)
+	}
+}
+
+// The other half of the same branch: a run error the transport did not
+// classify at all — a bare dial failure, say — still becomes KindTransport,
+// same as every other unclassified transport failure.
+func TestFetchClassifiesAnUnclassifiedRunErrorAsTransport(t *testing.T) {
+	tr := fake.New(func(fake.Call) fake.Response {
+		return fake.Response{RunErr: errors.New("dial tcp 10.0.0.1:22: connect: connection refused")}
+	})
+	if _, err := Fetch(context.Background(), tr, FetchOptions{}); !errors.Is(err, adpwsh.ErrTransport) {
+		t.Fatalf("want ErrTransport, got %v", err)
+	}
+}
+
 // An empty collection is the partial fetch that a retry loop would paper over,
 // so it is fatal and says what it saw.
 func TestFetchRejectsAnEmptyResult(t *testing.T) {
