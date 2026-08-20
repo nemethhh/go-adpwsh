@@ -177,11 +177,11 @@ itself until it is.
 
 `make schema-check` regenerates to a temporary file and diffs, which proves the
 committed catalog still matches the domain — but it drives the exporter the
-same way `make schema` does, so it inherits the same limitation and cannot run
-from anywhere but the Windows host itself. Proving the property there means
-exporting twice, passing `--exported-at` set to the committed file's own
-`source.exportedAt` both times (so the diff is of the schema, not the clock),
-and comparing the two results byte for byte.
+same way `make schema` does, so it inherits the same limitation, and `make`
+itself is generally not on the Windows host either. Proving the property
+today means running the exporter by hand, twice, passing `--exported-at` set
+to the committed file's own `source.exportedAt` both times (so the diff is of
+the schema, not the clock), and comparing the two results byte for byte.
 
 `adschema export --classes all` resolves every structural class instead of the
 three the provider manages (`organizationalUnit`, `group`, `user`). It costs
