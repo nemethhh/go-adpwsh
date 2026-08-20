@@ -1,0 +1,83 @@
+{
+  "source": {
+    "domain": "corp.local",
+    "forestMode": "Windows2025Forest",
+    "schemaNC": "CN=Schema,CN=Configuration,DC=corp,DC=local",
+    "objectVersion": 91,
+    "exportedAt": "2026-08-20T10:41:00Z",
+    "exporter": "adschema/1"
+  },
+  "attributes": {
+    "cn": {
+      "oid": "2.5.4.3",
+      "syntax": "2.5.5.12",
+      "omSyntax": 64,
+      "singleValued": true,
+      "systemOnly": false,
+      "rangeUpper": 64,
+      "indexed": true,
+      "linkId": null
+    },
+    "member": {
+      "oid": "1.2.840.113556.1.4.31",
+      "syntax": "2.5.5.1",
+      "omSyntax": 127,
+      "singleValued": false,
+      "systemOnly": false,
+      "indexed": false,
+      "linkId": 2
+    },
+    "memberOf": {
+      "oid": "1.2.840.113556.1.2.102",
+      "syntax": "2.5.5.1",
+      "omSyntax": 127,
+      "singleValued": false,
+      "systemOnly": true,
+      "indexed": false,
+      "linkId": 3
+    },
+    "sAMAccountName": {
+      "oid": "1.2.840.113556.1.4.221",
+      "syntax": "2.5.5.12",
+      "omSyntax": 64,
+      "singleValued": true,
+      "systemOnly": false,
+      "rangeLower": 0,
+      "rangeUpper": 256,
+      "indexed": true,
+      "linkId": null
+    }
+  },
+  "classes": {
+    "group": {
+      "structural": true,
+      "mandatory": [
+        "cn",
+        "sAMAccountName"
+      ],
+      "optional": [
+        "member",
+        "memberOf"
+      ],
+      "via": {
+        "cn": "top",
+        "member": "group",
+        "memberOf": "top",
+        "sAMAccountName": "group"
+      }
+    },
+    "top": {
+      "structural": false,
+      "mandatory": [
+        "cn"
+      ],
+      "optional": [
+        "memberOf"
+      ],
+      "via": {
+        "cn": "top",
+        "memberOf": "top"
+      }
+    }
+  }
+}
