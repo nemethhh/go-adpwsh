@@ -126,6 +126,46 @@ func TestToolScriptGolden(t *testing.T) {
 	}
 }
 
+// TestSchemaFetchArraysSurviveASingleElement pins the fix for a real defect: a
+// class whose auxiliaryClass/mayContain/mustContain (or their system- twins)
+// has exactly one value used to reach the JSON output as a bare string, not a
+// one-element array, because PowerShell's function-return output stream
+// unwraps a single-element array — Convert-AdSchemaNames's own internal @()
+// does not survive being returned. The fix re-wraps each call site in @() at
+// the point the JSON object is built, exactly like the attributes/classes
+// arrays a few lines above it.
+//
+// No PowerShell runs in CI, so a shape assertion on the composed script text
+// is the only guard available here: it cannot prove the JSON comes out right,
+// only that the six call sites keep the @() that makes it so. The lab run
+// against a real domain is what proves the runtime behaviour; this is what
+// stops a future edit from silently dropping the wrapper.
+func TestSchemaFetchArraysSurviveASingleElement(t *testing.T) {
+	s, err := ToolScript(ToolSchemaFetch)
+	if err != nil {
+		t.Fatalf("ToolScript: %v", err)
+	}
+	// Anchored on the call site, not on "<field> = @(...", because the six
+	// fields are column-aligned with a variable run of spaces before "="; a
+	// check keyed to the field name plus a single space would break on the
+	// file's own formatting, not on a regression.
+	for _, field := range []string{
+		"auxiliaryClass", "systemAuxiliaryClass",
+		"mayContain", "systemMayContain",
+		"mustContain", "systemMustContain",
+	} {
+		callSite := "Convert-AdSchemaNames $_." + field + ")"
+		wrapped := "= @(" + callSite
+		if !strings.Contains(s, wrapped) {
+			t.Errorf("the schema fetch script is missing %q; a single-element result would decode as a string, not an array", wrapped)
+		}
+		bare := "= (" + callSite
+		if strings.Contains(s, bare) {
+			t.Errorf("the schema fetch script has an unwrapped %q; a single-element result would decode as a string, not an array", bare)
+		}
+	}
+}
+
 // A tool shares the preamble and epilogue, which is what makes its credential
 // handling, error shape and framing identical to every op's rather than merely
 // similar.

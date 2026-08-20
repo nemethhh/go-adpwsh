@@ -130,12 +130,18 @@ try {
                 name                 = [string]$_.lDAPDisplayName
                 category             = [int]$_.objectClassCategory
                 subClassOf           = [string]$_.subClassOf
-                auxiliaryClass       = (Convert-AdSchemaNames $_.auxiliaryClass)
-                systemAuxiliaryClass = (Convert-AdSchemaNames $_.systemAuxiliaryClass)
-                mayContain           = (Convert-AdSchemaNames $_.mayContain)
-                systemMayContain     = (Convert-AdSchemaNames $_.systemMayContain)
-                mustContain          = (Convert-AdSchemaNames $_.mustContain)
-                systemMustContain    = (Convert-AdSchemaNames $_.systemMustContain)
+                # PowerShell unwraps a one-element array across a function
+                # return: Convert-AdSchemaNames's own @() only guarantees an
+                # array inside the function, and a single surviving name comes
+                # back out as a bare string. The array has to be re-established
+                # here, at the point where the JSON object is built -- the same
+                # reason attributes/classes above are wrapped in @() too.
+                auxiliaryClass       = @(Convert-AdSchemaNames $_.auxiliaryClass)
+                systemAuxiliaryClass = @(Convert-AdSchemaNames $_.systemAuxiliaryClass)
+                mayContain           = @(Convert-AdSchemaNames $_.mayContain)
+                systemMayContain     = @(Convert-AdSchemaNames $_.systemMayContain)
+                mustContain          = @(Convert-AdSchemaNames $_.mustContain)
+                systemMustContain    = @(Convert-AdSchemaNames $_.systemMustContain)
             } })
         }
     }
