@@ -106,6 +106,7 @@ usage:
   adschema export --transport ssh --ssh-host HOST --ssh-user USER \
                   (--ssh-private-key-path PATH | --ssh-password-env VAR) \
                   (--ssh-known-hosts FILE | --ssh-host-key LINE | --ssh-insecure-ignore-host-key) [flags]
+                  (ssh cannot carry this export to a host whose sshd DefaultShell is cmd.exe; see README)
 
 Run "adschema export -h" for every flag.
 `)
@@ -114,7 +115,7 @@ Run "adschema export -h" for every flag.
 func parseArgs(args []string, getenv func(string) string, now time.Time) (*config, error) {
 	fs := flag.NewFlagSet("adschema export", flag.ContinueOnError)
 
-	transport := fs.String("transport", "", `"local" or "ssh" (required)`)
+	transport := fs.String("transport", "", `"local" or "ssh" (required; ssh cannot carry this export to a host whose sshd DefaultShell is cmd.exe — see README)`)
 	server := fs.String("server", "", "domain controller every cmdlet targets; empty lets the Windows host resolve one")
 	classes := fs.String("classes", "organizationalUnit,group,user",
 		`classes to resolve, comma separated, or "all" for every structural class`)
@@ -224,7 +225,9 @@ func render(err error) string {
 	case adpwsh.KindDenied:
 		msg += "\n  the account reading the schema needs read access to the schema naming context"
 	case adpwsh.KindTransport:
-		msg += "\n  check the transport, and that the domain controller answers on TCP 9389"
+		msg += "\n  check the transport, and that the domain controller answers on TCP 9389;" +
+			` if this is "The command line is too long", --transport ssh cannot carry this` +
+			" export to a host whose sshd DefaultShell is cmd.exe — see README"
 	}
 	return msg
 }

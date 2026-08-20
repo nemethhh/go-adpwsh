@@ -166,14 +166,20 @@ go run ./cmd/adschema export --transport local \
   --server dc01.corp.local --out schema/catalog.json
 ```
 
-`--transport ssh` cannot carry this export today. `transport/ssh` sends the
-composed script inline as `pwsh -EncodedCommand <base64>`; base64-of-UTF-16
-runs about 2.7x the size of the source, and the schema fetch's script — the
-largest this library sends — exceeds the roughly 8,191-character command-line
-limit of `cmd.exe`, the shell behind sshd's `DefaultShell` on a Windows host.
-The host answers "The command line is too long." That is a library defect,
-recorded as follow-up work rather than fixed here: regenerate on the host
-itself until it is.
+`--transport ssh` cannot carry this export today — and, in fact, cannot carry
+any operation this library sends. `transport/ssh` sends the composed script
+inline as `pwsh -EncodedCommand <base64>`; base64-of-UTF-16 runs about 2.7x
+the size of the source, and *every* script this library sends exceeds the
+roughly 8,191-character command-line limit of `cmd.exe`, the shell behind
+sshd's `DefaultShell` on a Windows host — the schema fetch is merely the
+largest of them. The host answers "The command line is too long." A host
+whose `DefaultShell` is PowerShell itself gets `CreateProcess`'s far larger
+~32,767-character limit, which may be enough to carry these scripts — nobody
+has tested that configuration or verified the quoting it would need, so treat
+it as a possibility, not a fix. This is a known defect in this library's SSH
+transport, not a mistake in your configuration, and it is recorded as
+follow-up work rather than fixed here: regenerate on the host itself until
+it is.
 
 `make schema-check` regenerates to a temporary file and diffs, which proves the
 committed catalog still matches the domain — but it drives the exporter the
