@@ -118,9 +118,6 @@ func (o *OUClient) Update(ctx context.Context, id Identity, spec OUSpec) (*OU, e
 	var ops adscript.AttrOps
 	set := map[string]any{"Identity": id.identityArg()}
 	applyStringField(&ops, set, "Description", "description", spec.Description)
-	if spec.Protected != nil && *spec.Protected != current.Protected {
-		set["ProtectedFromAccidentalDeletion"] = *spec.Protected
-	}
 	if err := conflictToError(op, ops.Apply(set)); err != nil {
 		return nil, err
 	}
@@ -139,7 +136,29 @@ func (o *OUClient) Update(ctx context.Context, id Identity, spec OUSpec) (*OU, e
 		payload["move"] = map[string]any{"Identity": id.identityArg(), "TargetPath": spec.Container}
 	}
 
-	if payload["set"] == nil && payload["rename"] == nil && payload["move"] == nil {
+	// ProtectedFromAccidentalDeletion is deliberately not part of `set`, which
+	// the script applies before the move. The flag places an explicit Deny for
+	// Delete on the OU, and a move is authorised through that same right, so a
+	// protected OU cannot be moved until it is lifted — and writing the flag
+	// before a move would deny the very move that follows it.
+	//
+	// Hence: lift it before the move when it is already set, and apply the
+	// caller's final answer afterwards, once the object is where it belongs.
+	finalProtected := current.Protected
+	if spec.Protected != nil {
+		finalProtected = *spec.Protected
+	}
+	protectedAfterMove := current.Protected
+	if !sameContainer && current.Protected {
+		payload["unprotectBeforeMove"] = true
+		protectedAfterMove = false
+	}
+	if finalProtected != protectedAfterMove {
+		payload["protect"] = finalProtected
+	}
+
+	if payload["set"] == nil && payload["rename"] == nil &&
+		payload["move"] == nil && payload["protect"] == nil {
 		return current, nil
 	}
 

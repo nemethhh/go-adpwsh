@@ -315,8 +315,24 @@ func (d *Directory) handleUpdate(c Call) Response {
 		o.Data["distinguishedName"] = o.DN
 	}
 	if move := splat(c.Payload, "move"); move != nil {
+		// Real AD refuses to move a protected object: the flag denies Delete on
+		// it, which is the right a move is authorised through. Modelling that
+		// here is the point of the fake — without it the provider passed every
+		// fake-backed test and still could not move an OU carrying AD's own
+		// default.
+		if c.Payload["unprotectBeforeMove"] == true {
+			o.Data["protected"] = false
+		}
+		if o.Data["protected"] == true {
+			return Fail("System.UnauthorizedAccessException", "Access is denied", 0x5)
+		}
 		o.DN = buildDN(o.Class, asString(o.Data["name"]), asString(move["TargetPath"]))
 		o.Data["distinguishedName"] = o.DN
+	}
+	// Applied last, mirroring the script: protection restored once the object
+	// is where it belongs.
+	if p, ok := c.Payload["protect"]; ok {
+		o.Data["protected"] = p == true
 	}
 	return OK(d.project(o))
 }

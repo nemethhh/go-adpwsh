@@ -271,3 +271,100 @@ func TestOUDeleteRefusesANonEmptyOU(t *testing.T) {
 		t.Errorf("the error must name the child count: %v", err)
 	}
 }
+
+// ProtectedFromAccidentalDeletion puts an explicit Deny for Delete on the OU
+// itself, and a move is authorised through that same right, so a protected OU
+// cannot be moved until the flag is lifted. Renaming is unaffected, which is
+// why only the move carries this.
+//
+// Verified against a real domain rather than reasoned about: with the flag set,
+// Move-ADObject is refused with "Access is denied" and Rename-ADObject succeeds;
+// once lifted, the move succeeds. The fake models protection as a stored
+// boolean with no ACL semantics, which is why this went unnoticed until the
+// acceptance suite ran.
+func TestOUUpdateLiftsProtectionAroundAMove(t *testing.T) {
+	tests := []struct {
+		name             string
+		startProtected   bool
+		spec             adpwsh.OUSpec
+		wantMove         bool
+		wantUnprotect    bool
+		wantProtectKey   bool
+		wantProtectValue bool
+	}{
+		{
+			name:           "a protected OU is unprotected for the move and protected again after",
+			startProtected: true,
+			spec:           adpwsh.OUSpec{Name: "Staff", Container: "OU=HQ,DC=corp,DC=local"},
+			wantMove:       true, wantUnprotect: true, wantProtectKey: true, wantProtectValue: true,
+		},
+		{
+			name:           "a rename alone needs no unprotecting",
+			startProtected: true,
+			spec:           adpwsh.OUSpec{Name: "People", Container: "DC=corp,DC=local"},
+			wantMove:       false, wantUnprotect: false, wantProtectKey: false,
+		},
+		{
+			// The caller wants it unprotected anyway, so it is left that way
+			// rather than re-protected and immediately unprotected again.
+			name:           "a move that also turns protection off does not restore it",
+			startProtected: true,
+			spec:           adpwsh.OUSpec{Name: "Staff", Container: "OU=HQ,DC=corp,DC=local", Protected: adpwsh.Bool(false)},
+			wantMove:       true, wantUnprotect: true, wantProtectKey: false,
+		},
+		{
+			// The ordering case: protection must be applied after the move. Set
+			// first and the move it precedes is denied by the flag just written.
+			name:           "a move that turns protection on applies it after the move",
+			startProtected: false,
+			spec:           adpwsh.OUSpec{Name: "Staff", Container: "OU=HQ,DC=corp,DC=local", Protected: adpwsh.Bool(true)},
+			wantMove:       true, wantUnprotect: false, wantProtectKey: true, wantProtectValue: true,
+		},
+		{
+			name:           "an unprotected OU moves with no protection traffic at all",
+			startProtected: false,
+			spec:           adpwsh.OUSpec{Name: "Staff", Container: "OU=HQ,DC=corp,DC=local"},
+			wantMove:       true, wantUnprotect: false, wantProtectKey: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var payload map[string]any
+			cur := ouAt("Staff", "DC=corp,DC=local")
+			cur["protected"] = tt.startProtected
+			tr := fake.New(func(c fake.Call) fake.Response {
+				switch c.Op {
+				case "rootdse":
+					return fake.OK(rootDSE())
+				case "ou_read":
+					return fake.OK(cur)
+				case "ou_update":
+					payload = c.Payload
+					return fake.OK(cur)
+				}
+				t.Fatalf("unexpected op %q", c.Op)
+				return fake.Response{}
+			})
+			client := mustClient(t, adpwsh.Config{Transport: tr})
+
+			if _, err := client.OU.Update(context.Background(), adpwsh.ByGUID("9f2c"), tt.spec); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+
+			if got := payload["move"] != nil; got != tt.wantMove {
+				t.Errorf("move present = %v, want %v (payload %v)", got, tt.wantMove, payload)
+			}
+			if got := payload["unprotectBeforeMove"] != nil; got != tt.wantUnprotect {
+				t.Errorf("unprotectBeforeMove present = %v, want %v", got, tt.wantUnprotect)
+			}
+			protect, ok := payload["protect"]
+			if ok != tt.wantProtectKey {
+				t.Fatalf("protect present = %v, want %v (payload %v)", ok, tt.wantProtectKey, payload)
+			}
+			if ok && protect != tt.wantProtectValue {
+				t.Errorf("protect = %v, want %v", protect, tt.wantProtectValue)
+			}
+		})
+	}
+}
