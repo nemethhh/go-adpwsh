@@ -220,12 +220,12 @@ sources is a validation error rather than a silent precedence surprise.
 
 ## Stability
 
-`v0.x`. The module takes `v1` only after the lab answers the ranged-read
-question for group membership and the acceptance suite passes against a real
-domain. Until then, minor versions may change the surface.
+`v0.x`. Group membership (`Members`/`AddMembers`/`RemoveMembers`/`IsMember`) is
+present and reads the `member` attribute with ranged retrieval; `SetMembers` is
+deferred. The module takes `v1` only after the acceptance suite passes against a
+real domain. Until then, minor versions may change the surface.
 
-Membership (`GetMembers`/`AddMembers`/`RemoveMembers`/`SetMembers`), the
-`Catalog` interface, the generic `Object` sub-client, and tier-2
+The `Catalog` interface, the generic `Object` sub-client, and tier-2
 `Attributes map[string]any` are deliberately absent from this release.
 
 ## Licence
