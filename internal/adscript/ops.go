@@ -31,6 +31,11 @@ const (
 	OpOUSearch    = "ou_search"
 	OpGroupSearch = "group_search"
 	OpUserSearch  = "user_search"
+
+	OpACLRead       = "acl_read"
+	OpACLGrant      = "acl_grant"
+	OpACLRevoke     = "acl_revoke"
+	OpSchemaResolve = "schema_resolve"
 )
 
 var ops = []string{
@@ -40,6 +45,7 @@ var ops = []string{
 	OpGroupMembersRead, OpGroupMembersAdd, OpGroupMembersRemove, OpGroupMemberCheck,
 	OpUserCreate, OpUserRead, OpUserUpdate, OpUserDelete, OpUserSetPassword,
 	OpOUSearch, OpGroupSearch, OpUserSearch,
+	OpACLRead, OpACLGrant, OpACLRevoke, OpSchemaResolve,
 }
 
 // Ops returns every op name, in a stable order.
