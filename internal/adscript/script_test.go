@@ -61,6 +61,27 @@ func TestScriptInvariants(t *testing.T) {
 	}
 }
 
+func TestScriptComposesMembershipOps(t *testing.T) {
+	cases := map[string]string{
+		OpGroupMembersRead:   "member;range=",
+		OpGroupMembersAdd:    "Add-ADGroupMember",
+		OpGroupMembersRemove: "Remove-ADGroupMember",
+		OpGroupMemberCheck:   "Test-AdMember",
+	}
+	for op, want := range cases {
+		s, err := Script(op)
+		if err != nil {
+			t.Fatalf("Script(%q): %v", op, err)
+		}
+		if !strings.Contains(s, want) {
+			t.Errorf("Script(%q) does not contain %q", op, want)
+		}
+		if !strings.Contains(s, "Import-Module ActiveDirectory") {
+			t.Errorf("Script(%q) is missing the preamble", op)
+		}
+	}
+}
+
 // Script takes an op name from a closed set, which is what makes formatting a
 // value into script text impossible rather than merely discouraged.
 func TestScriptRejectsUnknownOp(t *testing.T) {

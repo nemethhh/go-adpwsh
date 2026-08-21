@@ -78,6 +78,18 @@ function Test-AdPresence($id) {
     }
 }
 
+# Test-AdMember reports whether $memberId is a direct member of $group without
+# enumerating the group: a base-scoped search on the group for that one member's
+# DN. The member DN is RFC 4515 escaped (backslash first) before it enters the
+# filter, so a DN containing filter metacharacters cannot break the query.
+function Test-AdMember($group, $memberId) {
+    $m = Get-ADObject -Identity $memberId @common
+    $dn = $m.DistinguishedName -replace '\\','\5c' -replace '\(','\28' -replace '\)','\29' -replace '\*','\2a'
+    $hit = @(Get-ADObject -SearchBase $group.DistinguishedName -SearchScope Base `
+               -LDAPFilter "(member=$dn)" @common)
+    return ($hit.Count -gt 0)
+}
+
 try {
     $data = & {
         $r = Get-ADRootDSE @common

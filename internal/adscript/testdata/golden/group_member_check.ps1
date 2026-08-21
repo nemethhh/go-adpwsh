@@ -92,13 +92,8 @@ function Test-AdMember($group, $memberId) {
 
 try {
     $data = & {
-        $results = @(foreach ($t in $p.targets) {
-            $present = $true
-            try { $null = Get-ADObject -Identity $p.identity -Server $t @credOnly -ErrorAction Stop }
-            catch { $present = $false }
-            [ordered]@{ target = $t; present = $present }
-        })
-        [ordered]@{ results = @($results) }
+        $g = Get-ADGroup -Identity $p.group @common
+        [ordered]@{ member = (Test-AdMember $g $p.member) }
     }
     $out = @{ ok = $true; data = $data }
 } catch {

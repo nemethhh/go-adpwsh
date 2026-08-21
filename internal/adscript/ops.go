@@ -16,6 +16,12 @@ const (
 	OpGroupRead       = "group_read"
 	OpGroupUpdate     = "group_update"
 	OpGroupDelete     = "group_delete"
+
+	OpGroupMembersRead   = "group_members_read"
+	OpGroupMembersAdd    = "group_members_add"
+	OpGroupMembersRemove = "group_members_remove"
+	OpGroupMemberCheck   = "group_member_check"
+
 	OpUserCreate      = "user_create"
 	OpUserRead        = "user_read"
 	OpUserUpdate      = "user_update"
@@ -27,6 +33,7 @@ var ops = []string{
 	OpRootDSE, OpDCList, OpDeletedProbe, OpReplicate, OpReplicateVerify,
 	OpOUCreate, OpOURead, OpOUUpdate, OpOUDelete,
 	OpGroupCreate, OpGroupRead, OpGroupUpdate, OpGroupDelete,
+	OpGroupMembersRead, OpGroupMembersAdd, OpGroupMembersRemove, OpGroupMemberCheck,
 	OpUserCreate, OpUserRead, OpUserUpdate, OpUserDelete, OpUserSetPassword,
 }
 
