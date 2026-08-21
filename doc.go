@@ -13,4 +13,9 @@
 // size limit) and return typed results. It is not an arbitrary directory API —
 // there is no generic object search, and object mutation remains
 // get-by-identity only.
+//
+// As of this version the library also manages object access control:
+// ACL.Get/Grant/Revoke over explicit ACEs (never the whole DACL), Schema.Resolve
+// (friendly name to schema GUID, with a well-known fast path), and Delegation
+// which expands a curated task into the ACEs that implement it.
 package adpwsh
