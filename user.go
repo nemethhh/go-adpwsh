@@ -182,8 +182,13 @@ func (u *UserClient) Update(ctx context.Context, id Identity, spec UserSpec) (*U
 	case spec.AccountExpiration.IsSet():
 		set["AccountExpirationDate"] = spec.AccountExpiration.Value().UTC().Format(time.RFC3339)
 	case spec.AccountExpiration.IsClear():
-		// Clearing accountExpires is how AD spells "never expires".
-		ops.ClearName("accountExpires")
+		// "Never expires" is Set-ADUser -AccountExpirationDate $null, not
+		// -Clear accountExpires. accountExpires is a system attribute that is
+		// always present (its "never" value is 0x7FFFFFFFFFFFFFFF), so removing
+		// it is an illegal modify that a real DC rejects with
+		// ADIllegalModifyOperationException. A Go nil in the splat map marshals
+		// to JSON null, which the cmdlet receives as $null.
+		set["AccountExpirationDate"] = nil
 	}
 	if err := conflictToError(op, ops.Apply(set)); err != nil {
 		return nil, err

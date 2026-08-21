@@ -197,18 +197,22 @@ func TestUserUpdateClearsSurnameThroughSn(t *testing.T) {
 }
 
 // OptTime is the three-state carrier a pointer cannot express, because
-// time.Time has no empty sentinel.
+// time.Time has no empty sentinel. "Never expires" is Set-ADUser
+// -AccountExpirationDate $null, NOT -Clear accountExpires: accountExpires is a
+// system attribute that is always present (its "never" value is
+// 0x7FFFFFFFFFFFFFFF), and AD refuses to remove it with
+// ADIllegalModifyOperationException.
 func TestUserAccountExpiration(t *testing.T) {
 	when := time.Date(2027, 1, 2, 3, 4, 5, 0, time.UTC)
 	tests := []struct {
 		name      string
 		opt       adpwsh.OptTime
-		wantParam any
-		wantClear bool
+		wantKey   bool // AccountExpirationDate present in the Set-ADUser splat
+		wantParam any  // its value when present ($null marshals from a Go nil)
 	}{
-		{"leave alone", adpwsh.OptTime{}, nil, false},
-		{"set", adpwsh.SetTime(when), "2027-01-02T03:04:05Z", false},
-		{"clear means never expires", adpwsh.ClearTime(), nil, true},
+		{"leave alone", adpwsh.OptTime{}, false, nil},
+		{"set", adpwsh.SetTime(when), true, "2027-01-02T03:04:05Z"},
+		{"clear means never expires", adpwsh.ClearTime(), true, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -231,18 +235,20 @@ func TestUserAccountExpiration(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if tt.wantParam != nil && set["AccountExpirationDate"] != tt.wantParam {
-				t.Errorf("AccountExpirationDate = %v, want %v", set["AccountExpirationDate"], tt.wantParam)
+			got, ok := set["AccountExpirationDate"]
+			if ok != tt.wantKey {
+				t.Errorf("AccountExpirationDate present = %v, want %v (set=%v)", ok, tt.wantKey, set)
 			}
+			if tt.wantKey && got != tt.wantParam {
+				t.Errorf("AccountExpirationDate = %v, want %v", got, tt.wantParam)
+			}
+			// -Clear accountExpires is the illegal modify a real DC rejects; it
+			// must never appear, whatever the OptTime state.
 			clear, _ := set["Clear"].([]any)
-			cleared := false
 			for _, v := range clear {
 				if v == "accountExpires" {
-					cleared = true
+					t.Error("accountExpires must not be cleared via -Clear; use -AccountExpirationDate $null")
 				}
-			}
-			if cleared != tt.wantClear {
-				t.Errorf("accountExpires cleared = %v, want %v", cleared, tt.wantClear)
 			}
 		})
 	}
