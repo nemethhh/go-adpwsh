@@ -6,20 +6,130 @@ import (
 	adpwsh "github.com/nemethhh/go-adpwsh"
 )
 
-func TestDelegationTemplateResetPasswords(t *testing.T) {
-	var d adpwsh.DelegationClient
-	specs, err := d.Template(adpwsh.TaskResetUserPasswords)
-	if err != nil {
-		t.Fatalf("Template: %v", err)
+func TestDelegationTemplateAllTasks(t *testing.T) {
+	type testCase struct {
+		name          string
+		task          adpwsh.DelegationTask
+		expectedSpecs []adpwsh.ACESpec
 	}
-	if len(specs) != 2 {
-		t.Fatalf("reset_user_passwords -> %d specs, want 2", len(specs))
+
+	tests := []testCase{
+		{
+			name: "TaskResetUserPasswords",
+			task: adpwsh.TaskResetUserPasswords,
+			expectedSpecs: []adpwsh.ACESpec{
+				{
+					Rights:      []adpwsh.Right{"ExtendedRight"},
+					ObjectType:  "Reset Password",
+					Scope:       adpwsh.InheritanceDescendants,
+					ObjectClass: "user",
+					Type:        adpwsh.ACEAllow,
+				},
+				{
+					Rights:      []adpwsh.Right{"ReadProperty", "WriteProperty"},
+					ObjectType:  "pwdLastSet",
+					Scope:       adpwsh.InheritanceDescendants,
+					ObjectClass: "user",
+					Type:        adpwsh.ACEAllow,
+				},
+			},
+		},
+		{
+			name: "TaskManageUsers",
+			task: adpwsh.TaskManageUsers,
+			expectedSpecs: []adpwsh.ACESpec{
+				{
+					Rights:      []adpwsh.Right{"CreateChild", "DeleteChild"},
+					ObjectType:  "user",
+					Scope:       adpwsh.InheritanceThis,
+					ObjectClass: "",
+					Type:        adpwsh.ACEAllow,
+				},
+				{
+					Rights:      []adpwsh.Right{"GenericAll"},
+					ObjectType:  "",
+					Scope:       adpwsh.InheritanceDescendants,
+					ObjectClass: "user",
+					Type:        adpwsh.ACEAllow,
+				},
+			},
+		},
+		{
+			name: "TaskModifyGroupMembership",
+			task: adpwsh.TaskModifyGroupMembership,
+			expectedSpecs: []adpwsh.ACESpec{
+				{
+					Rights:      []adpwsh.Right{"ReadProperty", "WriteProperty"},
+					ObjectType:  "member",
+					Scope:       adpwsh.InheritanceDescendants,
+					ObjectClass: "group",
+					Type:        adpwsh.ACEAllow,
+				},
+			},
+		},
+		{
+			name: "TaskManageGroups",
+			task: adpwsh.TaskManageGroups,
+			expectedSpecs: []adpwsh.ACESpec{
+				{
+					Rights:      []adpwsh.Right{"CreateChild", "DeleteChild"},
+					ObjectType:  "group",
+					Scope:       adpwsh.InheritanceThis,
+					ObjectClass: "",
+					Type:        adpwsh.ACEAllow,
+				},
+				{
+					Rights:      []adpwsh.Right{"GenericAll"},
+					ObjectType:  "",
+					Scope:       adpwsh.InheritanceDescendants,
+					ObjectClass: "group",
+					Type:        adpwsh.ACEAllow,
+				},
+			},
+		},
 	}
-	// First spec: the Reset Password extended right on descendant users.
-	s := specs[0]
-	if s.ObjectType != "Reset Password" || s.ObjectClass != "user" ||
-		s.Scope != adpwsh.InheritanceDescendants || len(s.Rights) != 1 || s.Rights[0] != "ExtendedRight" {
-		t.Errorf("spec[0] = %+v", s)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var d adpwsh.DelegationClient
+			specs, err := d.Template(tt.task)
+			if err != nil {
+				t.Fatalf("Template: %v", err)
+			}
+
+			if len(specs) != len(tt.expectedSpecs) {
+				t.Fatalf("got %d specs, want %d", len(specs), len(tt.expectedSpecs))
+			}
+
+			for i, spec := range specs {
+				expected := tt.expectedSpecs[i]
+
+				if len(spec.Rights) != len(expected.Rights) {
+					t.Errorf("spec[%d].Rights: got %d items, want %d", i, len(spec.Rights), len(expected.Rights))
+				}
+				for j, r := range spec.Rights {
+					if r != expected.Rights[j] {
+						t.Errorf("spec[%d].Rights[%d]: got %q, want %q", i, j, r, expected.Rights[j])
+					}
+				}
+
+				if spec.ObjectType != expected.ObjectType {
+					t.Errorf("spec[%d].ObjectType: got %q, want %q", i, spec.ObjectType, expected.ObjectType)
+				}
+
+				if spec.ObjectClass != expected.ObjectClass {
+					t.Errorf("spec[%d].ObjectClass: got %q, want %q", i, spec.ObjectClass, expected.ObjectClass)
+				}
+
+				if spec.Scope != expected.Scope {
+					t.Errorf("spec[%d].Scope: got %v, want %v", i, spec.Scope, expected.Scope)
+				}
+
+				if spec.Type != expected.Type {
+					t.Errorf("spec[%d].Type: got %v, want %v", i, spec.Type, expected.Type)
+				}
+			}
+		})
 	}
 }
 
@@ -30,8 +140,22 @@ func TestDelegationTemplateUnknownTask(t *testing.T) {
 	}
 }
 
-func TestTasksListsAllFour(t *testing.T) {
-	if len(adpwsh.Tasks()) != 4 {
-		t.Errorf("Tasks() = %v", adpwsh.Tasks())
+func TestTasksReturnsAllFourInOrder(t *testing.T) {
+	tasks := adpwsh.Tasks()
+	if len(tasks) != 4 {
+		t.Fatalf("Tasks() returned %d items, want 4", len(tasks))
+	}
+
+	expectedOrder := []adpwsh.DelegationTask{
+		adpwsh.TaskResetUserPasswords,
+		adpwsh.TaskManageUsers,
+		adpwsh.TaskModifyGroupMembership,
+		adpwsh.TaskManageGroups,
+	}
+
+	for i, expected := range expectedOrder {
+		if tasks[i] != expected {
+			t.Errorf("Tasks()[%d]: got %q, want %q", i, tasks[i], expected)
+		}
 	}
 }
