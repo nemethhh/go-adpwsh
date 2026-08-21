@@ -26,6 +26,9 @@ const (
 	// not complete. It is never retried, and the caller must persist the model
 	// it was returned alongside.
 	KindReplication
+	// KindTooManyResults means a search matched more than its size limit. It is
+	// never retried; the caller narrows the filter or raises the limit.
+	KindTooManyResults
 )
 
 func (k Kind) String() string {
@@ -52,6 +55,8 @@ func (k Kind) String() string {
 		return "schema error"
 	case KindReplication:
 		return "replication wait timed out"
+	case KindTooManyResults:
+		return "too many results"
 	default:
 		return "unknown"
 	}
@@ -130,6 +135,7 @@ var (
 	ErrInvalidAttribute error = kindSentinel{KindInvalidAttribute}
 	ErrSchema           error = kindSentinel{KindSchema}
 	ErrReplication      error = kindSentinel{KindReplication}
+	ErrTooManyResults   error = kindSentinel{KindTooManyResults}
 )
 
 func shortTypeName(full string) string {
