@@ -10,11 +10,12 @@ import (
 // Client is the entry point. Its sub-clients map one method to one provider
 // resource operation.
 type Client struct {
-	OU     *OUClient
-	Group  *GroupClient
-	User   *UserClient
-	Schema *SchemaClient
-	ACL    *ACLClient
+	OU         *OUClient
+	Group      *GroupClient
+	User       *UserClient
+	Schema     *SchemaClient
+	ACL        *ACLClient
+	Delegation *DelegationClient
 
 	core *core
 }
@@ -58,6 +59,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	client.User = &UserClient{c: c}
 	client.Schema = &SchemaClient{c: c}
 	client.ACL = &ACLClient{c: c}
+	client.Delegation = &DelegationClient{}
 	return client, nil
 }
 
