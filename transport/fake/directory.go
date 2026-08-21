@@ -157,6 +157,14 @@ func (d *Directory) Handle(c Call) Response {
 		}
 		d.Passwords[o.GUID] = append(d.Passwords[o.GUID], asString(c.Payload["password"]))
 		return OK(map[string]any{"reset": true})
+	case "group_members_read":
+		return d.handleMembersRead(c)
+	case "group_members_add":
+		return d.handleMembersAdd(c)
+	case "group_members_remove":
+		return d.handleMembersRemove(c)
+	case "group_member_check":
+		return d.handleMemberCheck(c)
 	default:
 		return Fail("Microsoft.ActiveDirectory.Management.ADException",
 			fmt.Sprintf("fake.Directory does not implement op %q", c.Op), 0)
@@ -445,4 +453,124 @@ func (d *Directory) Seed(class, name, container string, data map[string]any) str
 	}
 	d.objects[guid] = obj
 	return guid
+}
+
+// memberGUIDs reads the member set stored on a group, tolerating either the
+// []string the fake writes or the []any a decode round trip might yield.
+func memberGUIDs(o *DirectoryObject) []string {
+	switch t := o.Data["member"].(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, v := range t {
+			out = append(out, asString(v))
+		}
+		return out
+	}
+	return nil
+}
+
+func toStringSlice(v any) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			out = append(out, asString(e))
+		}
+		return out
+	}
+	return nil
+}
+
+func (d *Directory) handleMembersAdd(c Call) Response {
+	g := d.find(asString(c.Payload["identity"]))
+	if g == nil {
+		return notFound(asString(c.Payload["identity"]))
+	}
+	set := map[string]bool{}
+	for _, guid := range memberGUIDs(g) {
+		set[guid] = true
+	}
+	for _, m := range toStringSlice(c.Payload["members"]) {
+		mo := d.find(m)
+		if mo == nil {
+			return notFound(m)
+		}
+		set[mo.GUID] = true
+	}
+	g.Data["member"] = sortedKeys(set)
+	return OK(map[string]any{"added": true, "guid": g.GUID})
+}
+
+func (d *Directory) handleMembersRemove(c Call) Response {
+	g := d.find(asString(c.Payload["identity"]))
+	if g == nil {
+		return notFound(asString(c.Payload["identity"]))
+	}
+	set := map[string]bool{}
+	for _, guid := range memberGUIDs(g) {
+		set[guid] = true
+	}
+	for _, m := range toStringSlice(c.Payload["members"]) {
+		mo := d.find(m)
+		if mo == nil {
+			// A deleted / nonexistent member: real AD surfaces not-found here and
+			// the library swallows it on remove, so the edge counts as gone.
+			return notFound(m)
+		}
+		delete(set, mo.GUID)
+	}
+	g.Data["member"] = sortedKeys(set)
+	return OK(map[string]any{"removed": true, "guid": g.GUID})
+}
+
+func (d *Directory) handleMembersRead(c Call) Response {
+	g := d.find(asString(c.Payload["identity"]))
+	if g == nil {
+		return notFound(asString(c.Payload["identity"]))
+	}
+	members := []any{}
+	for _, guid := range memberGUIDs(g) {
+		mo := d.objects[guid]
+		if mo == nil || mo.Deleted {
+			continue
+		}
+		members = append(members, map[string]any{
+			"objectGUID":        mo.GUID,
+			"distinguishedName": mo.DN,
+			"objectClass":       mo.Class,
+			"sid":               asString(mo.Data["sid"]),
+		})
+	}
+	return OK(map[string]any{"members": members})
+}
+
+func (d *Directory) handleMemberCheck(c Call) Response {
+	g := d.find(asString(c.Payload["group"]))
+	if g == nil {
+		return notFound(asString(c.Payload["group"]))
+	}
+	m := d.find(asString(c.Payload["member"]))
+	if m == nil {
+		// Member gone: the library's IsMember swallows not-found into "false".
+		return notFound(asString(c.Payload["member"]))
+	}
+	for _, guid := range memberGUIDs(g) {
+		if guid == m.GUID {
+			return OK(map[string]any{"member": true})
+		}
+	}
+	return OK(map[string]any{"member": false})
+}
+
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

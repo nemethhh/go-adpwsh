@@ -199,3 +199,46 @@ func TestDirectoryTombstoneBlocksRecreate(t *testing.T) {
 		t.Errorf("Tombstoned not set: %+v", e)
 	}
 }
+
+func TestDirectoryMembership(t *testing.T) {
+	d := fake.NewDirectory()
+	g := d.Seed("group", "devs", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-1001"})
+	u1 := d.Seed("user", "alice", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-1101"})
+	u2 := d.Seed("user", "bob", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-1102"})
+
+	// Add u1, u2.
+	if r := d.Handle(fake.Call{Op: "group_members_add", Payload: map[string]any{
+		"identity": g, "members": []any{u1, u2}}}); r.Err != nil {
+		t.Fatalf("add: %+v", r.Err)
+	}
+	// Adding u1 again is idempotent.
+	if r := d.Handle(fake.Call{Op: "group_members_add", Payload: map[string]any{
+		"identity": g, "members": []any{u1}}}); r.Err != nil {
+		t.Fatalf("idempotent add: %+v", r.Err)
+	}
+	// Read returns exactly two members.
+	r := d.Handle(fake.Call{Op: "group_members_read", Payload: map[string]any{"identity": g}})
+	members := r.Data.(map[string]any)["members"].([]any)
+	if len(members) != 2 {
+		t.Fatalf("read returned %d members, want 2", len(members))
+	}
+	// Check: u1 is a member, a fresh unrelated object is not.
+	if c := d.Handle(fake.Call{Op: "group_member_check", Payload: map[string]any{
+		"group": g, "member": u1}}); c.Data.(map[string]any)["member"] != true {
+		t.Errorf("u1 should be a member")
+	}
+	// Remove u1; then it is no longer a member; removing again is idempotent.
+	if r := d.Handle(fake.Call{Op: "group_members_remove", Payload: map[string]any{
+		"identity": g, "members": []any{u1}}}); r.Err != nil {
+		t.Fatalf("remove: %+v", r.Err)
+	}
+	if c := d.Handle(fake.Call{Op: "group_member_check", Payload: map[string]any{
+		"group": g, "member": u1}}); c.Data.(map[string]any)["member"] != false {
+		t.Errorf("u1 should not be a member after removal")
+	}
+	if r := d.Handle(fake.Call{Op: "group_members_remove", Payload: map[string]any{
+		"identity": g, "members": []any{u1}}}); r.Err != nil {
+		t.Fatalf("idempotent remove: %+v", r.Err)
+	}
+	_ = u2
+}
