@@ -3,6 +3,7 @@ package adpwsh_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -221,5 +222,42 @@ func TestGroupMembership(t *testing.T) {
 	if err := client.Group.RemoveMembers(ctx, adpwsh.ByGUID("00000000-0000-4000-8000-999999999999"),
 		[]adpwsh.Identity{adpwsh.ByGUID(u2)}); err != nil {
 		t.Errorf("RemoveMembers on missing group = %v; want nil", err)
+	}
+}
+
+// TestGroupMembershipLargeSet drives a 5000-member group through the fake: it
+// proves AddMembers builds and Members decodes a member set far larger than the
+// 1500 ranged-retrieval page, at the Go layer. The real domain proves the cmdlet
+// pages correctly; this proves nothing in the library caps or truncates it.
+func TestGroupMembershipLargeSet(t *testing.T) {
+	ctx := context.Background()
+	dir := fake.NewDirectory()
+	client := mustClient(t, adpwsh.Config{Transport: dir.Transport()})
+
+	gid := dir.Seed("group", "big", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-2000"})
+
+	const n = 5000
+	ids := make([]adpwsh.Identity, 0, n)
+	for i := 0; i < n; i++ {
+		g := dir.Seed("user", fmt.Sprintf("bulk-%d", i), "DC=corp,DC=local",
+			map[string]any{"sid": fmt.Sprintf("S-1-5-21-1-2-3-%d", 10000+i)})
+		ids = append(ids, adpwsh.ByGUID(g))
+	}
+	if err := client.Group.AddMembers(ctx, adpwsh.ByGUID(gid), ids); err != nil {
+		t.Fatalf("AddMembers(%d): %v", n, err)
+	}
+	members, err := client.Group.Members(ctx, adpwsh.ByGUID(gid))
+	if err != nil {
+		t.Fatalf("Members: %v", err)
+	}
+	if len(members) != n {
+		t.Fatalf("Members returned %d, want %d", len(members), n)
+	}
+	// Removing every member empties the group.
+	if err := client.Group.RemoveMembers(ctx, adpwsh.ByGUID(gid), ids); err != nil {
+		t.Fatalf("RemoveMembers(%d): %v", n, err)
+	}
+	if members, err = client.Group.Members(ctx, adpwsh.ByGUID(gid)); err != nil || len(members) != 0 {
+		t.Fatalf("Members after full remove = %d, %v; want 0, nil", len(members), err)
 	}
 }
