@@ -171,6 +171,8 @@ func (d *Directory) Handle(c Call) Response {
 		return d.handleMembersRemove(c)
 	case "group_member_check":
 		return d.handleMemberCheck(c)
+	case "schema_resolve":
+		return d.handleSchemaResolve(c)
 	default:
 		return Fail("Microsoft.ActiveDirectory.Management.ADException",
 			fmt.Sprintf("fake.Directory does not implement op %q", c.Op), 0)
@@ -629,4 +631,29 @@ func sortedKeys(set map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// fakeSchema answers the handful of names the fake-backed suites resolve. It is
+// not the real schema — only what a consumer asks for is here.
+var fakeSchema = map[string]string{
+	"user":           "bf967aba-0de6-11d0-a285-00aa003049e2",
+	"group":          "bf967a9c-0de6-11d0-a285-00aa003049e2",
+	"member":         "bf9679c0-0de6-11d0-a285-00aa003049e2",
+	"pwdLastSet":     "bf967a0a-0de6-11d0-a285-00aa003049e2",
+	"Reset Password": "00299570-246d-11d0-a768-00aa006e0529",
+}
+
+func (d *Directory) handleSchemaResolve(c Call) Response {
+	refs, _ := c.Payload["refs"].([]any)
+	resolved := map[string]any{}
+	for _, r := range refs {
+		m, _ := r.(map[string]any)
+		name := asString(m["name"])
+		if g, ok := fakeSchema[name]; ok {
+			resolved[name] = g
+		} else {
+			resolved[name] = nil
+		}
+	}
+	return OK(map[string]any{"resolved": resolved})
 }
