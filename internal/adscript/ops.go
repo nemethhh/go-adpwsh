@@ -27,6 +27,10 @@ const (
 	OpUserUpdate      = "user_update"
 	OpUserDelete      = "user_delete"
 	OpUserSetPassword = "user_setpassword"
+
+	OpOUSearch    = "ou_search"
+	OpGroupSearch = "group_search"
+	OpUserSearch  = "user_search"
 )
 
 var ops = []string{
@@ -35,6 +39,7 @@ var ops = []string{
 	OpGroupCreate, OpGroupRead, OpGroupUpdate, OpGroupDelete,
 	OpGroupMembersRead, OpGroupMembersAdd, OpGroupMembersRemove, OpGroupMemberCheck,
 	OpUserCreate, OpUserRead, OpUserUpdate, OpUserDelete, OpUserSetPassword,
+	OpOUSearch, OpGroupSearch, OpUserSearch,
 }
 
 // Ops returns every op name, in a stable order.
