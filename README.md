@@ -223,12 +223,18 @@ sources is a validation error rather than a silent precedence surprise.
 `v0.x`. Group membership (`Members`/`AddMembers`/`RemoveMembers`/`IsMember`) is
 present; `Members` reads the full `member` attribute (the ActiveDirectory module
 performs ranged retrieval internally — the cmdlets reject the LDAP `;range=`
-option), and `SetMembers` is deferred. The module takes `v1` only after the
-acceptance suite passes against a real domain. Until then, minor versions may
-change the surface.
+option), and `SetMembers` is deferred. Bounded, class-scoped search
+(`OU.Search`/`Group.Search`/`User.Search`) is present as of `v0.4.0`: each takes
+a `Query` — an LDAP filter built through the exported `EscapeFilter`/`Equal`/`And`
+helpers, a search base, a scope and a size limit — and errors with
+`KindTooManyResults` rather than truncating past the limit. The module takes
+`v1` only after the acceptance suite passes against a real domain. Until then,
+minor versions may change the surface.
 
-The `Catalog` interface, the generic `Object` sub-client, and tier-2
-`Attributes map[string]any` are deliberately absent from this release.
+Search is still not an arbitrary directory API: there is no generic object
+search, and object mutation remains get-by-identity only. The `Catalog`
+interface, the generic `Object` sub-client, and tier-2 `Attributes map[string]any`
+are deliberately absent from this release.
 
 ## Licence
 
