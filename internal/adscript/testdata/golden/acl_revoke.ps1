@@ -92,7 +92,7 @@ function Test-AdMember($group, $memberId) {
 
 try {
     $data = & {
-        $dn = $p.target
+        $dn = (Get-ADObject -Identity $p.target -Properties distinguishedName @common).DistinguishedName
         $drive = "TFAD$PID"
         $null = New-PSDrive -Name $drive -PSProvider ActiveDirectory -Root '' -Server $common['Server'] @credOnly -ErrorAction Stop
         try {

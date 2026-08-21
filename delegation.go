@@ -17,8 +17,8 @@ func Tasks() []DelegationTask {
 
 // Template returns the ACE specs a task expands into. These mirror the AD
 // "Delegate Control" wizard's common tasks; the object/attribute names are
-// cross-checked against the schema well-known table and verified end-to-end on
-// the lab.
+// cross-checked against the schema well-known table and intended to be
+// verified end-to-end on the lab.
 func (d *DelegationClient) Template(task DelegationTask) ([]ACESpec, error) {
 	switch task {
 	case TaskResetUserPasswords:
