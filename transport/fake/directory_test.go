@@ -248,21 +248,29 @@ func TestDirectoryDACLGrantIdempotentAndRevokeSpecific(t *testing.T) {
 	guid := d.Seed("organizationalUnit", "Staff", "DC=corp,DC=local", nil)
 	ace := map[string]any{"trustee": "S-1-5-1", "type": "Allow", "rights": []any{"WriteProperty"},
 		"objectType": "", "inheritedObjectType": "", "inheritance": "Descendents"}
+	// A second ACE with a different trustee, so its fakeACEKey differs from
+	// ace's: revoking ace must leave this one behind, not clear the DACL.
+	other := map[string]any{"trustee": "S-1-5-2", "type": "Allow", "rights": []any{"WriteProperty"},
+		"objectType": "", "inheritedObjectType": "", "inheritance": "Descendents"}
 
-	grant := fake.Call{Op: "acl_grant", Payload: map[string]any{"target": guid, "aces": []any{ace, ace}}}
+	grant := fake.Call{Op: "acl_grant", Payload: map[string]any{"target": guid, "aces": []any{ace, ace, other}}}
 	d.Handle(grant)
 	d.Handle(grant) // idempotent
 
 	read := d.Handle(fake.Call{Op: "acl_read", Payload: map[string]any{"target": guid}})
 	aces, _ := read.Data.(map[string]any)["aces"].([]any)
-	if len(aces) != 1 {
-		t.Fatalf("after two grants of the same ACE, dacl has %d entries", len(aces))
+	if len(aces) != 2 {
+		t.Fatalf("after granting two distinct ACEs (one twice), dacl has %d entries, want 2", len(aces))
 	}
 
 	d.Handle(fake.Call{Op: "acl_revoke", Payload: map[string]any{"target": guid, "aces": []any{ace}}})
 	read = d.Handle(fake.Call{Op: "acl_read", Payload: map[string]any{"target": guid}})
 	aces, _ = read.Data.(map[string]any)["aces"].([]any)
-	if len(aces) != 0 {
-		t.Fatalf("after revoke, dacl has %d entries", len(aces))
+	if len(aces) != 1 {
+		t.Fatalf("after revoking one of two ACEs, dacl has %d entries, want 1", len(aces))
+	}
+	surviving, _ := aces[0].(map[string]any)
+	if trustee, _ := surviving["trustee"].(string); trustee != "S-1-5-2" {
+		t.Fatalf("surviving ACE = %v, want the untouched trustee S-1-5-2 (revoke must be specific, not clear the DACL)", surviving)
 	}
 }

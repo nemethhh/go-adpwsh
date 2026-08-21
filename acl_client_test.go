@@ -49,7 +49,7 @@ func TestACLGrantSendsResolvedACE(t *testing.T) {
 	}
 }
 
-func TestACLGetSkipsInheritedACEs(t *testing.T) {
+func TestACLGetReturnsInheritedFlag(t *testing.T) {
 	tr := fake.New(func(c fake.Call) fake.Response {
 		switch c.Op {
 		case "rootdse":
