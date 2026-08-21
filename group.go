@@ -2,6 +2,7 @@ package adpwsh
 
 import (
 	"context"
+	"errors"
 
 	"github.com/nemethhh/go-adpwsh/internal/addn"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
@@ -185,4 +186,103 @@ func (g *GroupClient) Delete(ctx context.Context, id Identity) error {
 // with an opaque error.
 func deletedPrincipalFilter(sam string) string {
 	return "(&(isDeleted=TRUE)(sAMAccountName=" + addn.EscapeFilter(sam) + "))"
+}
+
+type memberJSON struct {
+	GUID  string `json:"objectGUID"`
+	DN    string `json:"distinguishedName"`
+	Class string `json:"objectClass"`
+	SID   string `json:"sid"`
+}
+
+// identityArgs projects identities onto their cmdlet -Identity arguments.
+func identityArgs(ids []Identity) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id.identityArg()
+	}
+	return out
+}
+
+// Members reads a group's full membership. It pages the multivalued member
+// attribute so the result is correct for a group of any size.
+func (g *GroupClient) Members(ctx context.Context, group Identity) ([]Member, error) {
+	const op = "Group.Members"
+	var out struct {
+		Members []memberJSON `json:"members"`
+	}
+	if err := g.c.exec(ctx, adscript.OpGroupMembersRead, map[string]any{
+		"identity": group.identityArg(),
+	}, &out); err != nil {
+		return nil, withIdentity(err, op, group)
+	}
+	members := make([]Member, len(out.Members))
+	for i, m := range out.Members {
+		members[i] = Member{GUID: m.GUID, DN: m.DN, Class: m.Class, SID: m.SID}
+	}
+	return members, nil
+}
+
+// AddMembers adds each member to the group. It is idempotent: a member already
+// present is not an error. A member that does not exist is a real error and is
+// surfaced.
+func (g *GroupClient) AddMembers(ctx context.Context, group Identity, members []Identity) error {
+	const op = "Group.AddMembers"
+	if len(members) == 0 {
+		return nil
+	}
+	unlock := g.c.locks.lock(group.identityArg())
+	defer unlock()
+	var out struct {
+		GUID string `json:"guid"`
+	}
+	if err := g.c.exec(ctx, adscript.OpGroupMembersAdd, map[string]any{
+		"identity": group.identityArg(), "members": identityArgs(members),
+	}, &out); err != nil {
+		return withIdentity(err, op, group)
+	}
+	return g.c.replicate(ctx, out.GUID)
+}
+
+// RemoveMembers removes each member from the group. It is idempotent: a member
+// not present is not an error, and a not-found group is success — the edges are
+// gone regardless.
+func (g *GroupClient) RemoveMembers(ctx context.Context, group Identity, members []Identity) error {
+	const op = "Group.RemoveMembers"
+	if len(members) == 0 {
+		return nil
+	}
+	unlock := g.c.locks.lock(group.identityArg())
+	defer unlock()
+	var out struct {
+		GUID string `json:"guid"`
+	}
+	if err := g.c.exec(ctx, adscript.OpGroupMembersRemove, map[string]any{
+		"identity": group.identityArg(), "members": identityArgs(members),
+	}, &out); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return withIdentity(err, op, group)
+	}
+	return g.c.replicate(ctx, out.GUID)
+}
+
+// IsMember reports whether member is a direct member of group without
+// enumerating the group. A not-found group or member reads as "false": the edge
+// cannot exist, which is drift the caller reconciles rather than an error.
+func (g *GroupClient) IsMember(ctx context.Context, group, member Identity) (bool, error) {
+	const op = "Group.IsMember"
+	var out struct {
+		Member bool `json:"member"`
+	}
+	if err := g.c.exec(ctx, adscript.OpGroupMemberCheck, map[string]any{
+		"group": group.identityArg(), "member": member.identityArg(),
+	}, &out); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, withIdentity(err, op, group)
+	}
+	return out.Member, nil
 }

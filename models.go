@@ -26,6 +26,14 @@ type Group struct {
 	SID            string
 }
 
+// Member is one entry read back from a group's membership.
+type Member struct {
+	GUID  string
+	DN    string
+	Class string // user, group, computer, foreignSecurityPrincipal, …
+	SID   string
+}
+
 // User is a user account.
 type User struct {
 	GUID                  string

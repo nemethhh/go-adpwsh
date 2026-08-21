@@ -170,3 +170,56 @@ func TestGroupDeleteVerifiesAbsence(t *testing.T) {
 		t.Fatal("a delete that left the object present must be an error")
 	}
 }
+
+func TestGroupMembership(t *testing.T) {
+	ctx := context.Background()
+	dir := fake.NewDirectory()
+	client := mustClient(t, adpwsh.Config{Transport: dir.Transport()})
+
+	gid := dir.Seed("group", "devs", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-1001"})
+	u1 := dir.Seed("user", "alice", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-1101"})
+	u2 := dir.Seed("user", "bob", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-1102"})
+
+	if err := client.Group.AddMembers(ctx, adpwsh.ByGUID(gid),
+		[]adpwsh.Identity{adpwsh.ByGUID(u1), adpwsh.ByGUID(u2)}); err != nil {
+		t.Fatalf("AddMembers: %v", err)
+	}
+	// Idempotent re-add.
+	if err := client.Group.AddMembers(ctx, adpwsh.ByGUID(gid),
+		[]adpwsh.Identity{adpwsh.ByGUID(u1)}); err != nil {
+		t.Fatalf("idempotent AddMembers: %v", err)
+	}
+	members, err := client.Group.Members(ctx, adpwsh.ByGUID(gid))
+	if err != nil {
+		t.Fatalf("Members: %v", err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("Members returned %d, want 2", len(members))
+	}
+	got := map[string]bool{members[0].GUID: true, members[1].GUID: true}
+	if !got[u1] || !got[u2] {
+		t.Errorf("Members = %+v, want %s and %s", members, u1, u2)
+	}
+	ok, err := client.Group.IsMember(ctx, adpwsh.ByGUID(gid), adpwsh.ByGUID(u1))
+	if err != nil || !ok {
+		t.Errorf("IsMember(u1) = %v, %v; want true, nil", ok, err)
+	}
+	if err := client.Group.RemoveMembers(ctx, adpwsh.ByGUID(gid),
+		[]adpwsh.Identity{adpwsh.ByGUID(u1)}); err != nil {
+		t.Fatalf("RemoveMembers: %v", err)
+	}
+	// Idempotent re-remove.
+	if err := client.Group.RemoveMembers(ctx, adpwsh.ByGUID(gid),
+		[]adpwsh.Identity{adpwsh.ByGUID(u1)}); err != nil {
+		t.Fatalf("idempotent RemoveMembers: %v", err)
+	}
+	ok, err = client.Group.IsMember(ctx, adpwsh.ByGUID(gid), adpwsh.ByGUID(u1))
+	if err != nil || ok {
+		t.Errorf("IsMember(u1) after remove = %v, %v; want false, nil", ok, err)
+	}
+	// Remove against a nonexistent group is success (edges are gone anyway).
+	if err := client.Group.RemoveMembers(ctx, adpwsh.ByGUID("00000000-0000-4000-8000-999999999999"),
+		[]adpwsh.Identity{adpwsh.ByGUID(u2)}); err != nil {
+		t.Errorf("RemoveMembers on missing group = %v; want nil", err)
+	}
+}
