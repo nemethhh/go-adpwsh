@@ -2,6 +2,7 @@ package adpwsh
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/nemethhh/go-adpwsh/internal/addn"
@@ -137,6 +138,31 @@ func (u *UserClient) Get(ctx context.Context, id Identity) (*User, error) {
 		return nil, &Error{Kind: KindTransport, Op: "User.Get", Err: err}
 	}
 	return model, nil
+}
+
+// Search returns every user under q.SearchBase matching q.Filter.
+func (u *UserClient) Search(ctx context.Context, q Query) ([]User, error) {
+	const op = "User.Search"
+	q = q.withDefaults(u.c.dnc)
+	var out struct {
+		Results []userJSON `json:"results"`
+	}
+	if err := u.c.exec(ctx, adscript.OpUserSearch, q.payload(userProject), &out); err != nil {
+		return nil, err
+	}
+	if len(out.Results) > q.SizeLimit {
+		return nil, &Error{Kind: KindTooManyResults, Op: op,
+			Err: fmt.Errorf("more than %d objects matched; narrow the filter or raise the limit", q.SizeLimit)}
+	}
+	models := make([]User, 0, len(out.Results))
+	for _, j := range out.Results {
+		m, err := j.model()
+		if err != nil {
+			return nil, &Error{Kind: KindTransport, Op: op, Err: err}
+		}
+		models = append(models, *m)
+	}
+	return models, nil
 }
 
 // Update folds the attribute write, the rename and the move into one round

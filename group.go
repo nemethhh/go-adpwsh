@@ -3,6 +3,7 @@ package adpwsh
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/nemethhh/go-adpwsh/internal/addn"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
@@ -91,6 +92,31 @@ func (g *GroupClient) Get(ctx context.Context, id Identity) (*Group, error) {
 		return nil, &Error{Kind: KindTransport, Op: "Group.Get", Err: err}
 	}
 	return model, nil
+}
+
+// Search returns every group under q.SearchBase matching q.Filter.
+func (g *GroupClient) Search(ctx context.Context, q Query) ([]Group, error) {
+	const op = "Group.Search"
+	q = q.withDefaults(g.c.dnc)
+	var out struct {
+		Results []groupJSON `json:"results"`
+	}
+	if err := g.c.exec(ctx, adscript.OpGroupSearch, q.payload(groupProject), &out); err != nil {
+		return nil, err
+	}
+	if len(out.Results) > q.SizeLimit {
+		return nil, &Error{Kind: KindTooManyResults, Op: op,
+			Err: fmt.Errorf("more than %d objects matched; narrow the filter or raise the limit", q.SizeLimit)}
+	}
+	models := make([]Group, 0, len(out.Results))
+	for _, j := range out.Results {
+		m, err := j.model()
+		if err != nil {
+			return nil, &Error{Kind: KindTransport, Op: op, Err: err}
+		}
+		models = append(models, *m)
+	}
+	return models, nil
 }
 
 // Update folds the attribute write, the rename and the move into one round

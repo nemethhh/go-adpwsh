@@ -90,6 +90,33 @@ func (o *OUClient) Get(ctx context.Context, id Identity) (*OU, error) {
 	return model, nil
 }
 
+// Search returns every organizational unit under q.SearchBase matching
+// q.Filter. It errors with KindTooManyResults rather than truncating: the
+// script requests one row over the limit, and finding it means more exist.
+func (o *OUClient) Search(ctx context.Context, q Query) ([]OU, error) {
+	const op = "OU.Search"
+	q = q.withDefaults(o.c.dnc)
+	var out struct {
+		Results []ouJSON `json:"results"`
+	}
+	if err := o.c.exec(ctx, adscript.OpOUSearch, q.payload(ouProject), &out); err != nil {
+		return nil, err
+	}
+	if len(out.Results) > q.SizeLimit {
+		return nil, &Error{Kind: KindTooManyResults, Op: op,
+			Err: fmt.Errorf("more than %d objects matched; narrow the filter or raise the limit", q.SizeLimit)}
+	}
+	models := make([]OU, 0, len(out.Results))
+	for _, j := range out.Results {
+		m, err := j.model()
+		if err != nil {
+			return nil, &Error{Kind: KindTransport, Op: op, Err: err}
+		}
+		models = append(models, *m)
+	}
+	return models, nil
+}
+
 // Update folds the attribute write, the rename and the move into one round
 // trip, in the order that keeps the DN valid. It never deletes and recreates,
 // because that destroys the object's SID and with it every ACL referencing it.
