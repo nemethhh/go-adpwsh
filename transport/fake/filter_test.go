@@ -14,10 +14,10 @@ func TestMatchFilterEquality(t *testing.T) {
 	}{
 		{"(sAMAccountName=jdoe)", true},
 		{"(sAMAccountName=other)", false},
-		{`(description=R&D)`, true},   // no special chars
-		{"(description=*)", true},     // presence
-		{"(title=*)", false},          // absent attribute
-		{"(sAMAccountName=j*)", true}, // trailing wildcard
+		{`(description=R&D)`, true},     // no special chars
+		{"(description=*)", true},       // presence
+		{"(title=*)", false},            // absent attribute
+		{"(sAMAccountName=j*)", true},   // trailing wildcard
 		{"(sAMAccountName=*doe)", true}, // leading wildcard
 		{"(sAMAccountName=*do*)", true}, // contains
 		{"(&(sAMAccountName=jdoe)(description=R&D))", true},
