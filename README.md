@@ -221,9 +221,11 @@ sources is a validation error rather than a silent precedence surprise.
 ## Stability
 
 `v0.x`. Group membership (`Members`/`AddMembers`/`RemoveMembers`/`IsMember`) is
-present and reads the `member` attribute with ranged retrieval; `SetMembers` is
-deferred. The module takes `v1` only after the acceptance suite passes against a
-real domain. Until then, minor versions may change the surface.
+present; `Members` reads the full `member` attribute (the ActiveDirectory module
+performs ranged retrieval internally — the cmdlets reject the LDAP `;range=`
+option), and `SetMembers` is deferred. The module takes `v1` only after the
+acceptance suite passes against a real domain. Until then, minor versions may
+change the surface.
 
 The `Catalog` interface, the generic `Object` sub-client, and tier-2
 `Attributes map[string]any` are deliberately absent from this release.

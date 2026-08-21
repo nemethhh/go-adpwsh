@@ -63,7 +63,7 @@ func TestScriptInvariants(t *testing.T) {
 
 func TestScriptComposesMembershipOps(t *testing.T) {
 	cases := map[string]string{
-		OpGroupMembersRead:   "member;range=",
+		OpGroupMembersRead:   "-Properties member",
 		OpGroupMembersAdd:    "Add-ADGroupMember",
 		OpGroupMembersRemove: "Remove-ADGroupMember",
 		OpGroupMemberCheck:   "Test-AdMember",
@@ -79,6 +79,16 @@ func TestScriptComposesMembershipOps(t *testing.T) {
 		if !strings.Contains(s, "Import-Module ActiveDirectory") {
 			t.Errorf("Script(%q) is missing the preamble", op)
 		}
+	}
+	// The LDAP ";range=" attribute option is rejected by Get-ADObject
+	// (System.ArgumentException on a real domain); the cmdlets page a
+	// multivalued attribute internally, so the read must never use it.
+	read, err := Script(OpGroupMembersRead)
+	if err != nil {
+		t.Fatalf("Script(%q): %v", OpGroupMembersRead, err)
+	}
+	if strings.Contains(read, "range=") {
+		t.Errorf("Script(%q) uses the ranged-retrieval attribute option, which the cmdlets reject", OpGroupMembersRead)
 	}
 }
 
