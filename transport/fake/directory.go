@@ -144,6 +144,12 @@ func (d *Directory) Handle(c Call) Response {
 			return notFound(asString(c.Payload["identity"]))
 		}
 		return OK(d.project(o))
+	case "ou_search":
+		return d.handleSearch(c, "organizationalUnit")
+	case "group_search":
+		return d.handleSearch(c, "group")
+	case "user_search":
+		return d.handleSearch(c, "user")
 	case "ou_update", "group_update", "user_update":
 		return d.handleUpdate(c)
 	case "ou_delete":
@@ -425,6 +431,56 @@ func (d *Directory) project(o *DirectoryObject) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// handleSearch answers a typed search: class filter, DN scope, the bounded LDAP
+// evaluator, and the size cap the library requested (SizeLimit+1). Results are
+// DN-ordered so truncation and assertions are deterministic.
+func (d *Directory) handleSearch(c Call, class string) Response {
+	filter := asString(c.Payload["filter"])
+	base := asString(c.Payload["searchBase"])
+	scope := asString(c.Payload["scope"])
+	limit, _ := c.Payload["sizeLimit"].(float64) // JSON numbers decode as float64
+	max := int(limit)
+
+	matched := make([]*DirectoryObject, 0)
+	for _, o := range d.objects {
+		if o.Deleted || o.Class != class {
+			continue
+		}
+		if !inScope(o.DN, base, scope) {
+			continue
+		}
+		ok, err := matchFilter(o, filter)
+		if err != nil {
+			return Fail("Microsoft.ActiveDirectory.Management.ADFilterParsingException", err.Error(), 0)
+		}
+		if ok {
+			matched = append(matched, o)
+		}
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].DN < matched[j].DN })
+	if max > 0 && len(matched) > max {
+		matched = matched[:max]
+	}
+	results := make([]any, 0, len(matched))
+	for _, o := range matched {
+		results = append(results, d.project(o))
+	}
+	return OK(map[string]any{"results": results})
+}
+
+// inScope reports whether dn is within base at the given -SearchScope value.
+func inScope(dn, base, scope string) bool {
+	switch scope {
+	case "Base":
+		return strings.EqualFold(dn, base)
+	case "OneLevel":
+		return strings.EqualFold(parentOf(dn), base)
+	default: // Subtree
+		return strings.EqualFold(dn, base) ||
+			strings.HasSuffix(strings.ToLower(dn), strings.ToLower(","+base))
+	}
 }
 
 // parentOf splits a DN at the first unescaped comma. The library's own parser
