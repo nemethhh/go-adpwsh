@@ -173,6 +173,12 @@ func (d *Directory) Handle(c Call) Response {
 		return d.handleMemberCheck(c)
 	case "schema_resolve":
 		return d.handleSchemaResolve(c)
+	case "acl_read":
+		return d.handleACLRead(c)
+	case "acl_grant":
+		return d.handleACLGrant(c)
+	case "acl_revoke":
+		return d.handleACLRevoke(c)
 	default:
 		return Fail("Microsoft.ActiveDirectory.Management.ADException",
 			fmt.Sprintf("fake.Directory does not implement op %q", c.Op), 0)
@@ -656,4 +662,97 @@ func (d *Directory) handleSchemaResolve(c Call) Response {
 		}
 	}
 	return OK(map[string]any{"resolved": resolved})
+}
+
+func fakeACEKey(m map[string]any) string {
+	rights := toStringSlice(m["rights"])
+	sorted := append([]string(nil), rights...)
+	sort.Strings(sorted)
+	return strings.ToLower(asString(m["trustee"])) + "|" +
+		strings.ToLower(asString(m["type"])) + "|" +
+		strings.ToLower(strings.Join(sorted, "+")) + "|" +
+		strings.ToLower(asString(m["objectType"])) + "|" +
+		strings.ToLower(asString(m["inheritedObjectType"])) + "|" +
+		strings.ToLower(asString(m["inheritance"]))
+}
+
+func dacl(o *DirectoryObject) []map[string]any {
+	switch t := o.Data["dacl"].(type) {
+	case []map[string]any:
+		return t
+	}
+	return nil
+}
+
+func (d *Directory) handleACLRead(c Call) Response {
+	o := d.find(asString(c.Payload["target"]))
+	if o == nil {
+		return notFound(asString(c.Payload["target"]))
+	}
+	aces := []any{}
+	for _, a := range dacl(o) {
+		aces = append(aces, a)
+	}
+	return OK(map[string]any{"aces": aces})
+}
+
+func (d *Directory) handleACLGrant(c Call) Response {
+	o := d.find(asString(c.Payload["target"]))
+	if o == nil {
+		return notFound(asString(c.Payload["target"]))
+	}
+	existing := dacl(o)
+	seen := map[string]bool{}
+	for _, a := range existing {
+		seen[fakeACEKey(a)] = true
+	}
+	for _, raw := range toAnySlice(c.Payload["aces"]) {
+		m := normalizeACE(raw)
+		if seen[fakeACEKey(m)] {
+			continue
+		}
+		existing = append(existing, m)
+		seen[fakeACEKey(m)] = true
+	}
+	o.Data["dacl"] = existing
+	return OK(map[string]any{"granted": true, "guid": o.GUID})
+}
+
+func (d *Directory) handleACLRevoke(c Call) Response {
+	o := d.find(asString(c.Payload["target"]))
+	if o == nil {
+		return notFound(asString(c.Payload["target"]))
+	}
+	remove := map[string]bool{}
+	for _, raw := range toAnySlice(c.Payload["aces"]) {
+		remove[fakeACEKey(normalizeACE(raw))] = true
+	}
+	kept := make([]map[string]any, 0)
+	for _, a := range dacl(o) {
+		if !remove[fakeACEKey(a)] {
+			kept = append(kept, a)
+		}
+	}
+	o.Data["dacl"] = kept
+	return OK(map[string]any{"revoked": true, "guid": o.GUID})
+}
+
+// normalizeACE coerces a decoded ACE payload into the stored shape, defaulting
+// the inherited flag to false (grant only ever writes explicit ACEs).
+func normalizeACE(raw any) map[string]any {
+	m, _ := raw.(map[string]any)
+	return map[string]any{
+		"trustee":             asString(m["trustee"]),
+		"type":                asString(m["type"]),
+		"rights":              toStringSlice(m["rights"]),
+		"objectType":          asString(m["objectType"]),
+		"inheritedObjectType": asString(m["inheritedObjectType"]),
+		"inheritance":         asString(m["inheritance"]),
+		"inherited":           false,
+	}
+}
+
+func toAnySlice(v any) []any {
+	s, _ := v.([]any)
+	return s
 }

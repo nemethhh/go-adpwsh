@@ -242,3 +242,27 @@ func TestDirectoryMembership(t *testing.T) {
 	}
 	_ = u2
 }
+
+func TestDirectoryDACLGrantIdempotentAndRevokeSpecific(t *testing.T) {
+	d := fake.NewDirectory()
+	guid := d.Seed("organizationalUnit", "Staff", "DC=corp,DC=local", nil)
+	ace := map[string]any{"trustee": "S-1-5-1", "type": "Allow", "rights": []any{"WriteProperty"},
+		"objectType": "", "inheritedObjectType": "", "inheritance": "Descendents"}
+
+	grant := fake.Call{Op: "acl_grant", Payload: map[string]any{"target": guid, "aces": []any{ace, ace}}}
+	d.Handle(grant)
+	d.Handle(grant) // idempotent
+
+	read := d.Handle(fake.Call{Op: "acl_read", Payload: map[string]any{"target": guid}})
+	aces, _ := read.Data.(map[string]any)["aces"].([]any)
+	if len(aces) != 1 {
+		t.Fatalf("after two grants of the same ACE, dacl has %d entries", len(aces))
+	}
+
+	d.Handle(fake.Call{Op: "acl_revoke", Payload: map[string]any{"target": guid, "aces": []any{ace}}})
+	read = d.Handle(fake.Call{Op: "acl_read", Payload: map[string]any{"target": guid}})
+	aces, _ = read.Data.(map[string]any)["aces"].([]any)
+	if len(aces) != 0 {
+		t.Fatalf("after revoke, dacl has %d entries", len(aces))
+	}
+}

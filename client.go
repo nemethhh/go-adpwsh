@@ -14,6 +14,7 @@ type Client struct {
 	Group  *GroupClient
 	User   *UserClient
 	Schema *SchemaClient
+	ACL    *ACLClient
 
 	core *core
 }
@@ -56,6 +57,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	client.Group = &GroupClient{c: c}
 	client.User = &UserClient{c: c}
 	client.Schema = &SchemaClient{c: c}
+	client.ACL = &ACLClient{c: c}
 	return client, nil
 }
 
