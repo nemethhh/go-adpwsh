@@ -22,14 +22,24 @@ type testServer struct {
 	Addr        string
 	HostKeyLine string
 
-	mu       sync.Mutex
-	requests []execRequest
-	maxOpen  int
-	open     int
+	mu        sync.Mutex
+	requests  []execRequest
+	maxOpen   int
+	open      int
+	connCount int
 
 	// Reply is called for each exec; it returns stdout, stderr and the exit
 	// status the client should see.
 	Reply func(req execRequest) (string, string, int)
+
+	// RejectChannelsOnFirstConnection, when set before the first connection
+	// is made, makes that first connection refuse every channel-open request
+	// while every later connection behaves normally. It simulates a
+	// connection that completed its handshake but is dead by the time a
+	// channel is actually needed — e.g. a jump box that idle-timed-out the
+	// session — so a test can drive the transport's one-reconnect-and-retry
+	// logic without an actual network failure.
+	RejectChannelsOnFirstConnection bool
 
 	listener net.Listener
 	signer   ssh.Signer
@@ -86,7 +96,17 @@ func (s *testServer) serve(nc net.Conn, cfg *ssh.ServerConfig) {
 	}
 	defer conn.Close()
 	go ssh.DiscardRequests(reqs)
+
+	s.mu.Lock()
+	s.connCount++
+	rejectAllChannels := s.RejectChannelsOnFirstConnection && s.connCount == 1
+	s.mu.Unlock()
+
 	for newChan := range chans {
+		if rejectAllChannels {
+			_ = newChan.Reject(ssh.ConnectionFailed, "simulated dead connection")
+			continue
+		}
 		if newChan.ChannelType() != "session" {
 			_ = newChan.Reject(ssh.UnknownChannelType, "only sessions")
 			continue

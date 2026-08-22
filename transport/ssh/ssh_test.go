@@ -311,8 +311,9 @@ func TestRunLargeCommandUsesSFTP(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 
-	if strings.Contains(gotCommand, "-EncodedCommand") || !strings.Contains(gotCommand, "-File ") {
-		t.Errorf("command = %q, want -File and not -EncodedCommand", gotCommand)
+	wantCmd := `pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + gotFilePath + `"`
+	if gotCommand != wantCmd {
+		t.Errorf("command = %q, want %q", gotCommand, wantCmd)
 	}
 	if !strings.HasPrefix(gotFilePath, remoteDir) {
 		t.Errorf("temp file %q not under RemoteTempDir %q", gotFilePath, remoteDir)
@@ -328,6 +329,56 @@ func TestRunLargeCommandUsesSFTP(t *testing.T) {
 
 	if _, err := os.Stat(gotFilePath); !os.IsNotExist(err) {
 		t.Errorf("temp file %q still exists after Run, stat err = %v", gotFilePath, err)
+	}
+}
+
+// The SFTP write phase must recover from a dead client exactly like the exec
+// path does: reset, redial once, and retry — rather than failing the op the
+// first time a channel open fails on a stale connection.
+func TestRunLargeCommandRecoversFromADeadClientDuringSFTPWrite(t *testing.T) {
+	s := newTestServer(t, "svc_tf", "hunter2")
+	// The first SSH connection dials fine (New succeeds) but refuses every
+	// channel open — standing in for a connection that is dead by the time a
+	// channel is actually needed, e.g. after an idle timeout. The second
+	// connection, opened by the transport's one-reconnect, behaves normally.
+	s.RejectChannelsOnFirstConnection = true
+
+	var gotCommand, gotFilePath string
+	s.Reply = func(req execRequest) (string, string, int) {
+		gotCommand = req.Command
+		gotFilePath = commandFilePath(req.Command)
+		if gotFilePath == "" {
+			return "", "no -File path found in " + req.Command, 1
+		}
+		if _, err := os.ReadFile(gotFilePath); err != nil {
+			return "", err.Error(), 1
+		}
+		return "<<<TFAD:BEGIN>>>\r\n{\"ok\":true,\"data\":{}}\r\n<<<TFAD:END>>>\r\n", "", 0
+	}
+
+	cfg := dialConfig(s, "svc_tf", "hunter2")
+	cfg.RemoteTempDir = t.TempDir()
+	tr, err := adssh.New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close()
+
+	script := strings.Repeat("Write-Output 'padding to clear the large-command threshold'; ", 200)
+	encoded := adscript.EncodeCommand(script)
+	if len(encoded) < 7000 {
+		t.Fatalf("test script too short to trigger the SFTP fallback: encoded length %d", len(encoded))
+	}
+
+	res, err := tr.Run(context.Background(), encoded, nil)
+	if err != nil {
+		t.Fatalf("Run must recover from the dead first connection, not fail the op: %v", err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, "TFAD:BEGIN") {
+		t.Fatalf("result = %+v", res)
+	}
+	if gotFilePath == "" || !strings.Contains(gotCommand, "-File ") {
+		t.Errorf("the -File exec never ran after the reconnect: command = %q", gotCommand)
 	}
 }
 

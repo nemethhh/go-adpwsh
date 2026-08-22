@@ -122,8 +122,11 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 
 // runLarge is the SFTP fallback for a command too large for -EncodedCommand.
 // It decodes the script, writes it to a randomly named file under
-// cfg.RemoteTempDir, runs it with -File, and removes it afterward on a
-// best-effort basis.
+// cfg.RemoteTempDir over one SFTP channel, closes that channel, runs the file
+// with -File on a fresh exec channel, and finally reopens a short-lived SFTP
+// channel to remove it — so at most one channel is ever open at a time per
+// operation, matching the package's "fresh channel per operation" invariant
+// and the Concurrency/MaxSessions sizing that assumes it.
 func (t *Transport) runLarge(ctx context.Context, client *ssh.Client, encodedCommand string, payload []byte) (adpwsh.Result, error) {
 	script, err := adscript.DecodeCommand(encodedCommand)
 	if err != nil {
@@ -142,43 +145,97 @@ func (t *Transport) runLarge(ctx context.Context, client *ssh.Client, encodedCom
 	}
 	// Windows OpenSSH's sftp-server also accepts forward slashes, and using
 	// them unconditionally is what lets a test point RemoteTempDir at an
-	// ordinary OS temp directory.
-	dir := strings.ReplaceAll(t.cfg.RemoteTempDir, `\`, "/")
+	// ordinary OS temp directory. TrimRight strips a trailing separator so a
+	// configured value ending in "/" or "\" doesn't produce a doubled slash.
+	dir := strings.TrimRight(strings.ReplaceAll(t.cfg.RemoteTempDir, `\`, "/"), "/")
 	remote := dir + "/adpwsh-" + hex.EncodeToString(nonce[:]) + ".ps1"
 
+	client, writeErr := t.writeScriptOverSFTP(client, remote, script)
+	// Best-effort cleanup runs whenever a remote path was chosen, even if the
+	// write itself failed partway (e.g. Create succeeded but Write did not):
+	// an orphaned .ps1 on the jump box must not leak silently. It never
+	// surfaces its own error, so it can never mask the op's real result.
+	defer t.cleanupRemoteScript(client, remote)
+	if writeErr != nil {
+		return adpwsh.Result{}, writeErr
+	}
+
+	// -EncodedCommand bypasses PowerShell's execution policy; -File does not,
+	// so a GPO-hardened host (AllSigned/Restricted) would otherwise refuse
+	// every large op with "running scripts is disabled on this system."
+	// -ExecutionPolicy Bypass makes -File behave like -EncodedCommand did.
+	cmd := t.cfg.PwshPath + ` -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + remote + `"`
+	return t.runOnSession(ctx, client, cmd, payload)
+}
+
+// writeScriptOverSFTP writes script to remote over an SFTP channel opened on
+// client, closing that channel before returning either way. If the write
+// fails, it reconnects once and retries the whole write phase — mirroring
+// runOnSession's dead-client handling — and returns the client the caller
+// should use from here on (the reconnected one, if a reconnect happened). A
+// write that still fails after the retry comes back as KindTransient, the
+// same as runOnSession's exhausted retry, so core's retry loop gets a chance
+// rather than being handed a non-retryable transport error.
+func (t *Transport) writeScriptOverSFTP(client *ssh.Client, remote, script string) (*ssh.Client, error) {
+	if err := writeSFTPFile(client, remote, script); err == nil {
+		return client, nil
+	}
+
+	// A dead client is worth one reconnect: a provider outlives sshd's idle
+	// timeouts.
+	t.reset()
+	newClient, dialErr := t.dial()
+	if dialErr != nil {
+		return newClient, dialErr
+	}
+	if err := writeSFTPFile(newClient, remote, script); err != nil {
+		return newClient, &adpwsh.Error{
+			Kind: adpwsh.KindTransient,
+			Op:   "ssh.Run",
+			Err:  fmt.Errorf("cannot write the large-command script over SFTP: %w", err),
+		}
+	}
+	return newClient, nil
+}
+
+// writeSFTPFile opens one SFTP channel on client, writes script to remote,
+// and closes the channel before returning.
+func writeSFTPFile(client *ssh.Client, remote, script string) error {
 	sc, err := sftp.NewClient(client)
 	if err != nil {
-		return adpwsh.Result{}, &adpwsh.Error{
-			Kind: adpwsh.KindTransport, Op: "ssh.Run",
-			Err: fmt.Errorf("cannot open an SFTP session: %w", err),
-		}
+		return fmt.Errorf("cannot open an SFTP session: %w", err)
 	}
 	defer sc.Close()
 
 	f, err := sc.Create(remote)
 	if err != nil {
-		return adpwsh.Result{}, &adpwsh.Error{
-			Kind: adpwsh.KindTransport, Op: "ssh.Run",
-			Err: fmt.Errorf("cannot create %s over SFTP: %w", remote, err),
-		}
+		return fmt.Errorf("cannot create %s over SFTP: %w", remote, err)
 	}
 	if _, err := f.Write([]byte(script)); err != nil {
 		_ = f.Close()
-		return adpwsh.Result{}, &adpwsh.Error{
-			Kind: adpwsh.KindTransport, Op: "ssh.Run",
-			Err: fmt.Errorf("cannot write %s over SFTP: %w", remote, err),
-		}
+		return fmt.Errorf("cannot write %s over SFTP: %w", remote, err)
 	}
 	if err := f.Close(); err != nil {
-		return adpwsh.Result{}, &adpwsh.Error{
-			Kind: adpwsh.KindTransport, Op: "ssh.Run",
-			Err: fmt.Errorf("cannot finalize %s over SFTP: %w", remote, err),
-		}
+		return fmt.Errorf("cannot finalize %s over SFTP: %w", remote, err)
 	}
-	defer func() { _ = sc.Remove(remote) }()
+	return nil
+}
 
-	cmd := t.cfg.PwshPath + ` -NoProfile -NonInteractive -File "` + remote + `"`
-	return t.runOnSession(ctx, client, cmd, payload)
+// cleanupRemoteScript best-effort removes the large-command temp file after
+// the op has run (or failed to). It opens its own short-lived SFTP channel —
+// never reusing one already closed — so that at most one channel is open at
+// a time per operation. Every failure here is swallowed: a leaked temp file
+// is worth accepting rather than masking the op's actual result.
+func (t *Transport) cleanupRemoteScript(client *ssh.Client, remote string) {
+	if client == nil {
+		return
+	}
+	sc, err := sftp.NewClient(client)
+	if err != nil {
+		return
+	}
+	defer sc.Close()
+	_ = sc.Remove(remote)
 }
 
 // runOnSession opens a channel, runs cmd on it with payload on stdin, and
