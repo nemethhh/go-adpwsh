@@ -363,6 +363,38 @@ func TestFakeTrimsAndTruncatesNames(t *testing.T) {
 	}
 }
 
+// TestFakeCreateSamUniquenessUsesMutatedValue proves the create-time duplicate
+// check compares the same mutated sAMAccountName that ends up stored, not the
+// raw incoming one. Real AD trims before it enforces uniqueness, so a second
+// create differing from an existing object only by surrounding whitespace must
+// be rejected as already-exists, not silently produce two objects that both
+// resolve to the same sAMAccountName.
+func TestFakeCreateSamUniquenessUsesMutatedValue(t *testing.T) {
+	c, _ := newClient(t)
+	ctx := context.Background()
+
+	if _, err := c.OU.Create(ctx, adpwsh.OUSpec{Name: "Staff", Container: "DC=corp,DC=local"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Group.Create(ctx, adpwsh.GroupSpec{
+		Name: "Reps", SamAccountName: "reps", Container: "OU=Staff,DC=corp,DC=local",
+		Scope: adpwsh.GroupScopeGlobal,
+	}); err != nil {
+		t.Fatalf("create first group: %v", err)
+	}
+
+	// "reps " mutates to the same "reps" already stored on the first group, so
+	// this must be rejected as already-exists, not silently accepted as
+	// distinct raw input.
+	_, err := c.Group.Create(ctx, adpwsh.GroupSpec{
+		Name: "Reps2", SamAccountName: "reps ", Container: "OU=Staff,DC=corp,DC=local",
+		Scope: adpwsh.GroupScopeGlobal,
+	})
+	if !errors.Is(err, adpwsh.ErrAlreadyExists) {
+		t.Fatalf("create with sam differing only by trailing whitespace = %v, want KindAlreadyExists", err)
+	}
+}
+
 func TestDirectoryDACLGrantIdempotentAndRevokeSpecific(t *testing.T) {
 	d := fake.NewDirectory()
 	guid := d.Seed("organizationalUnit", "Staff", "DC=corp,DC=local", nil)

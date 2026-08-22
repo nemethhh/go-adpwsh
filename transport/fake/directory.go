@@ -227,6 +227,14 @@ func (d *Directory) handleCreate(c Call, class string) Response {
 	name := mutateLikeAD(asString(create["Name"]), fakeCNMaxLen)
 	container := asString(create["Path"])
 	dn := buildDN(class, name, container)
+	// Normalized once, before the uniqueness check, so the duplicate test and
+	// the eventually stored value (applySplat mutates it again downstream, a
+	// no-op on an already-mutated value) agree — exactly as name already does
+	// by being mutated before dn is built.
+	if _, ok := create["SamAccountName"]; ok {
+		create["SamAccountName"] = mutateLikeAD(asString(create["SamAccountName"]), fakeSAMMaxLen)
+	}
+	sam := asString(create["SamAccountName"])
 
 	for _, o := range d.objects {
 		if strings.EqualFold(o.DN, dn) && !o.Deleted {
@@ -234,14 +242,14 @@ func (d *Directory) handleCreate(c Call, class string) Response {
 		}
 		if !o.Deleted && class != "organizationalUnit" &&
 			asString(o.Data["samAccountName"]) != "" &&
-			asString(o.Data["samAccountName"]) == asString(create["SamAccountName"]) {
+			asString(o.Data["samAccountName"]) == sam {
 			return alreadyExists(o.DN)
 		}
 		// A tombstone still holds the name, which is the condition rule 8
 		// exists to name.
 		if o.Deleted && (strings.EqualFold(o.DN, dn) ||
 			(asString(o.Data["samAccountName"]) != "" &&
-				asString(o.Data["samAccountName"]) == asString(create["SamAccountName"]))) {
+				asString(o.Data["samAccountName"]) == sam)) {
 			return alreadyExists(dn)
 		}
 	}
