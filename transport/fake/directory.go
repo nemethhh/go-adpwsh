@@ -615,10 +615,11 @@ func (d *Directory) handleMembersRead(c Call) Response {
 }
 
 // handleMembersReadRecursive mirrors Get-ADGroupMember -Recursive: it walks the
-// membership graph from the target group and returns the leaf accounts — members
-// that contain no child objects (non-groups, or empty groups). Intermediate
-// non-empty groups are traversed but not emitted. A visited set makes cycles
-// terminate and dedups a member reachable by more than one path.
+// membership graph from the target group and returns the leaf security
+// principals (users and computers). Group objects are traversed but never
+// returned — not even an empty nested group (confirmed against a real domain).
+// A visited set makes cycles terminate and dedups a member reachable by more
+// than one path, and the result is emitted in a stable objectGUID order.
 func (d *Directory) handleMembersReadRecursive(c Call) Response {
 	start := d.find(asString(c.Payload["identity"]))
 	if start == nil {
@@ -637,16 +638,26 @@ func (d *Directory) handleMembersReadRecursive(c Call) Response {
 			if mo == nil || mo.Deleted {
 				continue
 			}
-			if mo.Class == "group" && len(memberGUIDs(mo)) > 0 {
-				walk(mo) // traverse, do not emit
+			if mo.Class == "group" {
+				// Groups are traversed but never emitted — not even an empty
+				// nested group. An empty group simply has no members to walk into.
+				walk(mo)
 				continue
 			}
-			leaves[mo.GUID] = mo // leaf: non-group, or empty group
+			leaves[mo.GUID] = mo // leaf security principal (user/computer)
 		}
 	}
 	walk(start)
-	members := []any{}
-	for _, mo := range leaves {
+	// Emit in a stable objectGUID order, matching handleMembersRead's sorted
+	// output, so callers never see a spurious reordering between reads.
+	guids := make([]string, 0, len(leaves))
+	for g := range leaves {
+		guids = append(guids, g)
+	}
+	sort.Strings(guids)
+	members := make([]any, 0, len(guids))
+	for _, g := range guids {
+		mo := leaves[g]
 		members = append(members, map[string]any{
 			"objectGUID":        mo.GUID,
 			"distinguishedName": mo.DN,
