@@ -204,9 +204,27 @@ func buildDN(class, name, container string) string {
 	return rdnPrefix(class) + addn.EscapeValue(name) + "," + container
 }
 
+// mutateLikeAD reproduces the two silent adjustments Active Directory makes to a
+// name-like value: it trims surrounding whitespace, and it truncates to the
+// attribute's ceiling. The fake models the directory, so a consumer that sends
+// an out-of-range value sees back what a real DC would have stored — which is
+// what lets the provider's consistency guard be exercised off-domain.
+func mutateLikeAD(value string, maxLen int) string {
+	value = strings.TrimSpace(value)
+	if len(value) > maxLen {
+		value = value[:maxLen]
+	}
+	return value
+}
+
+const (
+	fakeCNMaxLen  = 64
+	fakeSAMMaxLen = 20
+)
+
 func (d *Directory) handleCreate(c Call, class string) Response {
 	create := splat(c.Payload, "create")
-	name := asString(create["Name"])
+	name := mutateLikeAD(asString(create["Name"]), fakeCNMaxLen)
 	container := asString(create["Path"])
 	dn := buildDN(class, name, container)
 
@@ -306,6 +324,9 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 			o.Data["category"] = strings.ToLower(asString(v))
 		default:
 			if field, ok := paramToField[param]; ok {
+				if field == "samAccountName" {
+					v = mutateLikeAD(asString(v), fakeSAMMaxLen)
+				}
 				o.Data[field] = v
 			}
 		}
@@ -334,8 +355,9 @@ func (d *Directory) handleUpdate(c Call) Response {
 		d.applySplat(o, set)
 	}
 	if rename := splat(c.Payload, "rename"); rename != nil {
-		o.Data["name"] = asString(rename["NewName"])
-		o.DN = buildDN(o.Class, asString(rename["NewName"]), parentOf(o.DN))
+		newName := mutateLikeAD(asString(rename["NewName"]), fakeCNMaxLen)
+		o.Data["name"] = newName
+		o.DN = buildDN(o.Class, newName, parentOf(o.DN))
 		o.Data["distinguishedName"] = o.DN
 	}
 	if move := splat(c.Payload, "move"); move != nil {

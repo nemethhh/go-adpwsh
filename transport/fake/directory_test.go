@@ -321,6 +321,48 @@ func TestDirectoryMembershipRecursiveSkipsEmptyGroups(t *testing.T) {
 	}
 }
 
+// TestFakeTrimsAndTruncatesNames pins the fake to two silent adjustments a real
+// DC makes to name-like attributes: surrounding whitespace is trimmed, and an
+// over-long value is truncated to the attribute's ceiling (CN 64, sAMAccountName
+// 20). This is what lets the provider's consistency guard be exercised without a
+// real domain: a consumer that sends an out-of-range value gets back what AD
+// would actually have stored.
+func TestFakeTrimsAndTruncatesNames(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newClient(t)
+	_, err := c.OU.Create(ctx, adpwsh.OUSpec{Name: "Staff", Container: "DC=corp,DC=local"})
+	if err != nil {
+		t.Fatalf("seed OU: %v", err)
+	}
+
+	// Trailing space is trimmed, exactly as Active Directory trims an RDN.
+	g, err := c.Group.Create(ctx, adpwsh.GroupSpec{
+		Name: "Reps ", SamAccountName: "reps ", Container: "OU=Staff,DC=corp,DC=local",
+		Scope: adpwsh.GroupScopeGlobal,
+	})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if g.Name != "Reps" {
+		t.Errorf("Name = %q, want %q (trailing space trimmed)", g.Name, "Reps")
+	}
+	if g.SamAccountName != "reps" {
+		t.Errorf("SamAccountName = %q, want %q (trailing space trimmed)", g.SamAccountName, "reps")
+	}
+
+	// A sAMAccountName over 20 characters is truncated to 20.
+	long := "abcdefghijklmnopqrstuvwxyz" // 26 chars
+	u, err := c.User.Create(ctx, adpwsh.UserSpec{
+		SamAccountName: long, Container: "OU=Staff,DC=corp,DC=local",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if len(u.SamAccountName) != 20 || u.SamAccountName != long[:20] {
+		t.Errorf("SamAccountName = %q, want first 20 chars %q", u.SamAccountName, long[:20])
+	}
+}
+
 func TestDirectoryDACLGrantIdempotentAndRevokeSpecific(t *testing.T) {
 	d := fake.NewDirectory()
 	guid := d.Seed("organizationalUnit", "Staff", "DC=corp,DC=local", nil)
