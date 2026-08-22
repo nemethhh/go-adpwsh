@@ -231,6 +231,13 @@ helpers, a search base, a scope and a size limit — and errors with
 `v1` only after the acceptance suite passes against a real domain. Until then,
 minor versions may change the surface.
 
+Access control is present via `ACL.Get`, `ACL.Grant` and `ACL.Revoke` over
+explicit ACEs on an object's DACL. Schema resolution (`Schema.Resolve`) maps
+friendly schema names to their GUIDs with a well-known fast path. Delegation
+task expansion (`Delegation.Template` and `Delegation.Tasks`) is a pure function
+that expands a curated delegation task into the ACEs that implement it, with no
+I/O side effects.
+
 Search is still not an arbitrary directory API: there is no generic object
 search, and object mutation remains get-by-identity only. The `Catalog`
 interface, the generic `Object` sub-client, and tier-2 `Attributes map[string]any`
