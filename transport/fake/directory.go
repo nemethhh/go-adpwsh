@@ -165,6 +165,8 @@ func (d *Directory) Handle(c Call) Response {
 		return OK(map[string]any{"reset": true})
 	case "group_members_read":
 		return d.handleMembersRead(c)
+	case "group_members_read_recursive":
+		return d.handleMembersReadRecursive(c)
 	case "group_members_add":
 		return d.handleMembersAdd(c)
 	case "group_members_remove":
@@ -602,6 +604,49 @@ func (d *Directory) handleMembersRead(c Call) Response {
 		if mo == nil || mo.Deleted {
 			continue
 		}
+		members = append(members, map[string]any{
+			"objectGUID":        mo.GUID,
+			"distinguishedName": mo.DN,
+			"objectClass":       mo.Class,
+			"sid":               asString(mo.Data["sid"]),
+		})
+	}
+	return OK(map[string]any{"members": members})
+}
+
+// handleMembersReadRecursive mirrors Get-ADGroupMember -Recursive: it walks the
+// membership graph from the target group and returns the leaf accounts — members
+// that contain no child objects (non-groups, or empty groups). Intermediate
+// non-empty groups are traversed but not emitted. A visited set makes cycles
+// terminate and dedups a member reachable by more than one path.
+func (d *Directory) handleMembersReadRecursive(c Call) Response {
+	start := d.find(asString(c.Payload["identity"]))
+	if start == nil {
+		return notFound(asString(c.Payload["identity"]))
+	}
+	seen := map[string]bool{}
+	leaves := map[string]*DirectoryObject{}
+	var walk func(o *DirectoryObject)
+	walk = func(o *DirectoryObject) {
+		for _, guid := range memberGUIDs(o) {
+			if seen[guid] {
+				continue
+			}
+			seen[guid] = true
+			mo := d.objects[guid]
+			if mo == nil || mo.Deleted {
+				continue
+			}
+			if mo.Class == "group" && len(memberGUIDs(mo)) > 0 {
+				walk(mo) // traverse, do not emit
+				continue
+			}
+			leaves[mo.GUID] = mo // leaf: non-group, or empty group
+		}
+	}
+	walk(start)
+	members := []any{}
+	for _, mo := range leaves {
 		members = append(members, map[string]any{
 			"objectGUID":        mo.GUID,
 			"distinguishedName": mo.DN,

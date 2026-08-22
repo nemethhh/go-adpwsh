@@ -219,10 +219,12 @@ sources is a validation error rather than a silent precedence surprise.
 
 ## Stability
 
-`v0.x`. Group membership (`Members`/`AddMembers`/`RemoveMembers`/`IsMember`) is
+`v0.x`. Group membership (`Members`/`MembersRecursive`/`AddMembers`/`RemoveMembers`/`IsMember`) is
 present; `Members` reads the full `member` attribute (the ActiveDirectory module
 performs ranged retrieval internally — the cmdlets reject the LDAP `;range=`
-option), and `SetMembers` is deferred. Bounded, class-scoped search
+option), `MembersRecursive` resolves nesting via `Get-ADGroupMember -Recursive`
+(leaf accounts only; primary-group-only membership excluded), and `SetMembers` is
+deferred. Bounded, class-scoped search
 (`OU.Search`/`Group.Search`/`User.Search`) is present as of `v0.4.0`: each takes
 a `Query` — an LDAP filter built through the exported `EscapeFilter`/`Equal`/`And`
 helpers, a search base, a scope and a size limit — and errors with
