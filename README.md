@@ -166,28 +166,27 @@ go run ./cmd/adschema export --transport local \
   --server dc01.corp.local --out schema/catalog.json
 ```
 
-`--transport ssh` cannot carry this export today — and, in fact, cannot carry
-any operation this library sends. `transport/ssh` sends the composed script
-inline as `pwsh -EncodedCommand <base64>`; base64-of-UTF-16 runs about 2.7x
-the size of the source, and *every* script this library sends exceeds the
+`--transport ssh` can now carry this export, and every other operation this
+library sends. `transport/ssh` sends short commands inline as
+`pwsh -EncodedCommand <base64>`; base64-of-UTF-16 runs about 2.7x the size of
+the source, and *every* script this library sends — the preamble and epilogue
+alone are already close to 4.5KB of source before an op is added — exceeds the
 roughly 8,191-character command-line limit of `cmd.exe`, the shell behind
-sshd's `DefaultShell` on a Windows host — the schema fetch is merely the
-largest of them. The host answers "The command line is too long." A host
-whose `DefaultShell` is PowerShell itself gets `CreateProcess`'s far larger
-~32,767-character limit, which may be enough to carry these scripts — nobody
-has tested that configuration or verified the quoting it would need, so treat
-it as a possibility, not a fix. This is a known defect in this library's SSH
-transport, not a mistake in your configuration, and it is recorded as
-follow-up work rather than fixed here: regenerate on the host itself until
-it is.
+sshd's `DefaultShell` on a Windows host; the schema fetch is merely the
+largest of them. Once the base64 reaches `largeCommandThreshold` (7,000
+characters — the same cutoff `scripts/lab/psrun.sh` uses), `transport/ssh`
+instead writes the script to a randomly named file under
+`Config.RemoteTempDir` (default `C:\Windows\Temp`) over SFTP on the same SSH
+connection, runs it with `-File`, and removes it afterward. This path is
+covered by an in-process fake SSH server that also serves the `sftp`
+subsystem; it has not yet been exercised against a real Windows jump box.
 
 `make schema-check` regenerates to a temporary file and diffs, which proves the
-committed catalog still matches the domain — but it drives the exporter the
-same way `make schema` does, so it inherits the same limitation, and `make`
-itself is generally not on the Windows host either. Proving the property
-today means running the exporter by hand, twice, passing `--exported-at` set
-to the committed file's own `source.exportedAt` both times (so the diff is of
-the schema, not the clock), and comparing the two results byte for byte.
+committed catalog still matches the domain — but `make` itself is generally
+not on the Windows host, so proving the property today still means running
+the exporter by hand, twice, passing `--exported-at` set to the committed
+file's own `source.exportedAt` both times (so the diff is of the schema, not
+the clock), and comparing the two results byte for byte.
 
 `adschema export --classes all` resolves every structural class instead of the
 three the provider manages (`organizationalUnit`, `group`, `user`). It costs

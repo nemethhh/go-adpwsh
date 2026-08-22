@@ -41,6 +41,14 @@ type Config struct {
 	Concurrency int
 	Timeout     time.Duration
 	PwshPath    string
+
+	// RemoteTempDir is the directory Run writes a script file to over SFTP
+	// when a command is too large for -EncodedCommand (see
+	// largeCommandThreshold in ssh.go). Defaults to C:\Windows\Temp. Backslash
+	// and forward-slash separators are both accepted; Run normalizes to
+	// forward slashes, which Windows OpenSSH's sftp-server also accepts, and
+	// that is what lets a test point this at an ordinary OS temp directory.
+	RemoteTempDir string
 }
 
 // WithDefaults fills the unset fields.
@@ -56,6 +64,9 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.PwshPath == "" {
 		c.PwshPath = "pwsh"
+	}
+	if c.RemoteTempDir == "" {
+		c.RemoteTempDir = `C:\Windows\Temp`
 	}
 	return c
 }
