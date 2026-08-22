@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -113,27 +114,48 @@ func (s *testServer) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 	}()
 
 	for req := range reqs {
-		if req.Type != "exec" {
+		switch req.Type {
+		case "exec":
+			var payload struct{ Command string }
+			_ = ssh.Unmarshal(req.Payload, &payload)
+			_ = req.Reply(true, nil)
+
+			stdin, _ := io.ReadAll(ch)
+			call := execRequest{Command: payload.Command, Stdin: stdin}
+			s.mu.Lock()
+			s.requests = append(s.requests, call)
+			s.mu.Unlock()
+
+			stdout, stderr, status := s.Reply(call)
+			_, _ = io.WriteString(ch, stdout)
+			_, _ = io.WriteString(ch.Stderr(), stderr)
+			b := make([]byte, 4)
+			binary.BigEndian.PutUint32(b, uint32(status))
+			_, _ = ch.SendRequest("exit-status", false, b)
+			return
+
+		case "subsystem":
+			// The large-command fallback opens this over the same
+			// ssh.Client via sftp.NewClient, which requests the "sftp"
+			// subsystem on a session channel exactly like a real Windows
+			// OpenSSH server does. Serving the real filesystem here is what
+			// lets the fallback write, and later remove, an actual temp file
+			// under test.
+			var payload struct{ Name string }
+			_ = ssh.Unmarshal(req.Payload, &payload)
+			if payload.Name != "sftp" {
+				_ = req.Reply(false, nil)
+				continue
+			}
+			_ = req.Reply(true, nil)
+			if srv, err := sftp.NewServer(ch); err == nil {
+				_ = srv.Serve()
+			}
+			return
+
+		default:
 			_ = req.Reply(false, nil)
-			continue
 		}
-		var payload struct{ Command string }
-		_ = ssh.Unmarshal(req.Payload, &payload)
-		_ = req.Reply(true, nil)
-
-		stdin, _ := io.ReadAll(ch)
-		call := execRequest{Command: payload.Command, Stdin: stdin}
-		s.mu.Lock()
-		s.requests = append(s.requests, call)
-		s.mu.Unlock()
-
-		stdout, stderr, status := s.Reply(call)
-		_, _ = io.WriteString(ch, stdout)
-		_, _ = io.WriteString(ch.Stderr(), stderr)
-		b := make([]byte, 4)
-		binary.BigEndian.PutUint32(b, uint32(status))
-		_, _ = ch.SendRequest("exit-status", false, b)
-		return
 	}
 }
 

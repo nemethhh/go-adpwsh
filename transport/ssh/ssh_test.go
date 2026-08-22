@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
+	"github.com/nemethhh/go-adpwsh/internal/adscript"
 	adssh "github.com/nemethhh/go-adpwsh/transport/ssh"
 )
 
@@ -87,7 +89,8 @@ func TestAuthPrecedenceValidation(t *testing.T) {
 func TestConfigDefaults(t *testing.T) {
 	cfg := adssh.Config{Host: "jump", User: "svc_tf", Password: "x", InsecureIgnoreHostKey: true}
 	got := cfg.WithDefaults()
-	if got.Port != 22 || got.Concurrency != 4 || got.Timeout != 60*time.Second || got.PwshPath != "pwsh" {
+	if got.Port != 22 || got.Concurrency != 4 || got.Timeout != 60*time.Second || got.PwshPath != "pwsh" ||
+		got.RemoteTempDir != `C:\Windows\Temp` {
 		t.Errorf("defaults = %+v", got)
 	}
 }
@@ -230,4 +233,116 @@ func TestSSHCancellationStopsARun(t *testing.T) {
 	if _, err := tr.Run(ctx, "QQA=", nil); err == nil {
 		t.Fatal("Run must return when the context expires")
 	}
+}
+
+// A command short enough for -EncodedCommand must never take the SFTP
+// fallback: no -File on the command line.
+func TestRunSmallCommandUsesEncodedCommand(t *testing.T) {
+	s := newTestServer(t, "svc_tf", "hunter2")
+	s.Reply = func(execRequest) (string, string, int) {
+		return "<<<TFAD:BEGIN>>>\r\n{\"ok\":true,\"data\":{}}\r\n<<<TFAD:END>>>\r\n", "", 0
+	}
+	tr, err := adssh.New(dialConfig(s, "svc_tf", "hunter2"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close()
+
+	if _, err := tr.Run(context.Background(), "QQBCAA==", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	reqs := s.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("server saw %d requests", len(reqs))
+	}
+	want := "pwsh -NoProfile -NonInteractive -EncodedCommand QQBCAA=="
+	if reqs[0].Command != want {
+		t.Errorf("command = %q, want %q", reqs[0].Command, want)
+	}
+	if strings.Contains(reqs[0].Command, "-File") {
+		t.Errorf("command = %q, must not use the SFTP fallback", reqs[0].Command)
+	}
+}
+
+// A command at or beyond the large-command threshold must be written to a
+// temp file over SFTP and run with -File, with the payload still arriving on
+// the exec session's stdin, and the temp file removed once Run returns.
+func TestRunLargeCommandUsesSFTP(t *testing.T) {
+	s := newTestServer(t, "svc_tf", "hunter2")
+
+	var gotCommand string
+	var gotFileContent []byte
+	var gotFilePath string
+	s.Reply = func(req execRequest) (string, string, int) {
+		gotCommand = req.Command
+		gotFilePath = commandFilePath(req.Command)
+		if gotFilePath == "" {
+			return "", "no -File path found in " + req.Command, 1
+		}
+		data, err := os.ReadFile(gotFilePath)
+		if err != nil {
+			return "", err.Error(), 1
+		}
+		gotFileContent = data
+		return "<<<TFAD:BEGIN>>>\r\n{\"ok\":true,\"data\":{}}\r\n<<<TFAD:END>>>\r\n", "", 0
+	}
+
+	remoteDir := t.TempDir()
+	cfg := dialConfig(s, "svc_tf", "hunter2")
+	cfg.RemoteTempDir = remoteDir
+	tr, err := adssh.New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close()
+
+	script := strings.Repeat("Write-Output 'padding to clear the large-command threshold'; ", 200)
+	encoded := adscript.EncodeCommand(script)
+	if len(encoded) < 7000 {
+		t.Fatalf("test script too short to trigger the SFTP fallback: encoded length %d", len(encoded))
+	}
+
+	res, err := tr.Run(context.Background(), encoded, []byte(`{"op":"rootdse"}`))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, "TFAD:BEGIN") {
+		t.Fatalf("result = %+v", res)
+	}
+
+	if strings.Contains(gotCommand, "-EncodedCommand") || !strings.Contains(gotCommand, "-File ") {
+		t.Errorf("command = %q, want -File and not -EncodedCommand", gotCommand)
+	}
+	if !strings.HasPrefix(gotFilePath, remoteDir) {
+		t.Errorf("temp file %q not under RemoteTempDir %q", gotFilePath, remoteDir)
+	}
+	if string(gotFileContent) != script {
+		t.Errorf("remote file content differed from the decoded script (len %d vs %d)", len(gotFileContent), len(script))
+	}
+
+	reqs := s.Requests()
+	if len(reqs) != 1 || string(reqs[0].Stdin) != `{"op":"rootdse"}` {
+		t.Errorf("payload did not arrive on the exec session's stdin: %+v", reqs)
+	}
+
+	if _, err := os.Stat(gotFilePath); !os.IsNotExist(err) {
+		t.Errorf("temp file %q still exists after Run, stat err = %v", gotFilePath, err)
+	}
+}
+
+// commandFilePath extracts the quoted path following "-File " from a command
+// line built by the SFTP fallback.
+func commandFilePath(cmd string) string {
+	const marker = `-File "`
+	i := strings.Index(cmd, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := cmd[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
 }

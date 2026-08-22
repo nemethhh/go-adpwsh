@@ -88,8 +88,11 @@ const (
 )
 
 // canonicalACEKey is the semantic identity of an ACE: case-insensitive, and
-// order-insensitive over Rights, so two representations of the same grant match.
-// It is what drift detection and revoke-by-identity compare on.
+// order-insensitive over Rights, so two representations of the same grant
+// match. It is what drift detection and revoke-by-identity compare on. Fields
+// join on "\x1f" (US) and rights join on "\x1e" (RS) — control characters
+// that can never appear in a SID, GUID, AD rights name, or enum value — so no
+// field's content can ever be mistaken for a separator.
 func canonicalACEKey(a ACE) string {
 	rights := make([]string, len(a.Rights))
 	for i, r := range a.Rights {
@@ -99,10 +102,10 @@ func canonicalACEKey(a ACE) string {
 	parts := []string{
 		strings.ToLower(a.Trustee),
 		strings.ToLower(string(a.Type)),
-		strings.Join(rights, "+"),
+		strings.Join(rights, "\x1e"),
 		strings.ToLower(a.ObjectType),
 		strings.ToLower(a.InheritedObjectType),
 		strings.ToLower(string(a.Inheritance)),
 	}
-	return strings.Join(parts, "|")
+	return strings.Join(parts, "\x1f")
 }

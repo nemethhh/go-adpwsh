@@ -3,16 +3,31 @@ package ssh
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
+	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
+
+// largeCommandThreshold is the encoded-command length at and beyond which Run
+// switches from -EncodedCommand to the SFTP temp-file fallback. On any
+// Windows host whose sshd DefaultShell is cmd.exe, the whole command line —
+// pwsh.exe plus its arguments, -EncodedCommand's value included — is capped
+// at roughly 8191 characters; composed op scripts base64-encode past that on
+// any op with real content. 7000 matches scripts/lab/psrun.sh's cutoff on the
+// encoded length, leaving margin for the fixed
+// "pwsh -NoProfile -NonInteractive -EncodedCommand " prefix.
+const largeCommandThreshold = 7000
 
 // Transport runs PowerShell on a Windows jump box over SSH.
 type Transport struct {
@@ -73,7 +88,10 @@ func (t *Transport) dial() (*ssh.Client, error) {
 	return client, nil
 }
 
-// Run executes one operation on a fresh channel.
+// Run executes one operation on a fresh channel. Commands short enough for
+// -EncodedCommand run directly; at largeCommandThreshold or beyond, the
+// script travels to the jump box as a temp file over SFTP and runs by path
+// instead (see runLarge).
 func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []byte) (adpwsh.Result, error) {
 	// Bound the channels. Exceeding sshd's MaxSessions is how an unbounded
 	// provider takes the jump box down under Terraform's default parallelism.
@@ -88,6 +106,87 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 	if err != nil {
 		return adpwsh.Result{}, err
 	}
+
+	if len(encodedCommand) < largeCommandThreshold {
+		// The command is fixed text plus a base64 argument. Its alphabet
+		// passes through cmd.exe unmangled, so quoting can never corrupt it —
+		// but the argument still becomes part of the process command line,
+		// which a cmd.exe DefaultShell caps at roughly 8191 characters. That
+		// length limit, not quoting, is why this path only handles commands
+		// under largeCommandThreshold.
+		cmd := t.cfg.PwshPath + " -NoProfile -NonInteractive -EncodedCommand " + encodedCommand
+		return t.runOnSession(ctx, client, cmd, payload)
+	}
+	return t.runLarge(ctx, client, encodedCommand, payload)
+}
+
+// runLarge is the SFTP fallback for a command too large for -EncodedCommand.
+// It decodes the script, writes it to a randomly named file under
+// cfg.RemoteTempDir, runs it with -File, and removes it afterward on a
+// best-effort basis.
+func (t *Transport) runLarge(ctx context.Context, client *ssh.Client, encodedCommand string, payload []byte) (adpwsh.Result, error) {
+	script, err := adscript.DecodeCommand(encodedCommand)
+	if err != nil {
+		return adpwsh.Result{}, &adpwsh.Error{
+			Kind: adpwsh.KindTransport, Op: "ssh.Run",
+			Err: fmt.Errorf("cannot decode a large command for the SFTP fallback: %w", err),
+		}
+	}
+
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return adpwsh.Result{}, &adpwsh.Error{
+			Kind: adpwsh.KindTransport, Op: "ssh.Run",
+			Err: fmt.Errorf("cannot generate a temp file name: %w", err),
+		}
+	}
+	// Windows OpenSSH's sftp-server also accepts forward slashes, and using
+	// them unconditionally is what lets a test point RemoteTempDir at an
+	// ordinary OS temp directory.
+	dir := strings.ReplaceAll(t.cfg.RemoteTempDir, `\`, "/")
+	remote := dir + "/adpwsh-" + hex.EncodeToString(nonce[:]) + ".ps1"
+
+	sc, err := sftp.NewClient(client)
+	if err != nil {
+		return adpwsh.Result{}, &adpwsh.Error{
+			Kind: adpwsh.KindTransport, Op: "ssh.Run",
+			Err: fmt.Errorf("cannot open an SFTP session: %w", err),
+		}
+	}
+	defer sc.Close()
+
+	f, err := sc.Create(remote)
+	if err != nil {
+		return adpwsh.Result{}, &adpwsh.Error{
+			Kind: adpwsh.KindTransport, Op: "ssh.Run",
+			Err: fmt.Errorf("cannot create %s over SFTP: %w", remote, err),
+		}
+	}
+	if _, err := f.Write([]byte(script)); err != nil {
+		_ = f.Close()
+		return adpwsh.Result{}, &adpwsh.Error{
+			Kind: adpwsh.KindTransport, Op: "ssh.Run",
+			Err: fmt.Errorf("cannot write %s over SFTP: %w", remote, err),
+		}
+	}
+	if err := f.Close(); err != nil {
+		return adpwsh.Result{}, &adpwsh.Error{
+			Kind: adpwsh.KindTransport, Op: "ssh.Run",
+			Err: fmt.Errorf("cannot finalize %s over SFTP: %w", remote, err),
+		}
+	}
+	defer func() { _ = sc.Remove(remote) }()
+
+	cmd := t.cfg.PwshPath + ` -NoProfile -NonInteractive -File "` + remote + `"`
+	return t.runOnSession(ctx, client, cmd, payload)
+}
+
+// runOnSession opens a channel, runs cmd on it with payload on stdin, and
+// waits for it to finish — reconnecting once if the client turned out to be
+// dead, since a provider outlives sshd's idle timeouts. A non-zero exit is
+// data the envelope parser decides on; only a failure to run at all is a
+// transport error.
+func (t *Transport) runOnSession(ctx context.Context, client *ssh.Client, cmd string, payload []byte) (adpwsh.Result, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		// A dead client is worth one reconnect: a provider outlives sshd's
@@ -112,11 +211,6 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 	session.Stdin = bytes.NewReader(payload)
-
-	// The command is fixed text plus a base64 argument whose alphabet passes
-	// through cmd.exe unmangled, which is what makes the jump box's
-	// DefaultShell setting unable to corrupt it.
-	cmd := t.cfg.PwshPath + " -NoProfile -NonInteractive -EncodedCommand " + encodedCommand
 
 	done := make(chan error, 1)
 	go func() { done <- session.Run(cmd) }()
