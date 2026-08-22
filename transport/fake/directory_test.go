@@ -243,6 +243,31 @@ func TestDirectoryMembership(t *testing.T) {
 	_ = u2
 }
 
+func TestDirectoryMembershipRecursive(t *testing.T) {
+	d := fake.NewDirectory()
+	parent := d.Seed("group", "parent", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-3001"})
+	child := d.Seed("group", "child", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-3002"})
+	user := d.Seed("user", "leaf", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-3101"})
+
+	// user ∈ child, child ∈ parent, and parent ∈ child (a cycle to prove termination).
+	d.Handle(fake.Call{Op: "group_members_add", Payload: map[string]any{"identity": child, "members": []any{user}}})
+	d.Handle(fake.Call{Op: "group_members_add", Payload: map[string]any{"identity": parent, "members": []any{child}}})
+	d.Handle(fake.Call{Op: "group_members_add", Payload: map[string]any{"identity": child, "members": []any{parent}}})
+
+	r := d.Handle(fake.Call{Op: "group_members_read_recursive", Payload: map[string]any{"identity": parent}})
+	members := r.Data.(map[string]any)["members"].([]any)
+	if len(members) != 1 {
+		t.Fatalf("recursive members = %d (%v), want 1 leaf user", len(members), members)
+	}
+	m := members[0].(map[string]any)
+	if m["objectGUID"] != user {
+		t.Errorf("leaf = %v, want user %s", m["objectGUID"], user)
+	}
+	if m["objectClass"] != "user" {
+		t.Errorf("leaf class = %v, want user", m["objectClass"])
+	}
+}
+
 func TestDirectoryDACLGrantIdempotentAndRevokeSpecific(t *testing.T) {
 	d := fake.NewDirectory()
 	guid := d.Seed("organizationalUnit", "Staff", "DC=corp,DC=local", nil)
