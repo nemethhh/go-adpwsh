@@ -209,12 +209,21 @@ func buildDN(class, name, container string) string {
 // attribute's ceiling. The fake models the directory, so a consumer that sends
 // an out-of-range value sees back what a real DC would have stored — which is
 // what lets the provider's consistency guard be exercised off-domain.
+//
+// It is deliberately idempotent: mutateLikeAD(mutateLikeAD(v, n), n) ==
+// mutateLikeAD(v, n) for any v and n. Truncation can expose a new trailing
+// space (the cut can land right after an internal whitespace character), so
+// the value is trimmed again after truncating. Without that second trim, a
+// value mutated once (as handleCreate does, for its uniqueness check) and the
+// same value mutated twice (as applySplat then does again, when it stores it)
+// could disagree — which would let two creates that share the exact same
+// out-of-range raw value both slip past the already-exists check.
 func mutateLikeAD(value string, maxLen int) string {
 	value = strings.TrimSpace(value)
 	if len(value) > maxLen {
 		value = value[:maxLen]
 	}
-	return value
+	return strings.TrimSpace(value)
 }
 
 const (
@@ -228,9 +237,9 @@ func (d *Directory) handleCreate(c Call, class string) Response {
 	container := asString(create["Path"])
 	dn := buildDN(class, name, container)
 	// Normalized once, before the uniqueness check, so the duplicate test and
-	// the eventually stored value (applySplat mutates it again downstream, a
-	// no-op on an already-mutated value) agree — exactly as name already does
-	// by being mutated before dn is built.
+	// the eventually stored value (applySplat mutates it again downstream;
+	// mutateLikeAD is idempotent, so re-applying it changes nothing) agree —
+	// exactly as name already does by being mutated before dn is built.
 	if _, ok := create["SamAccountName"]; ok {
 		create["SamAccountName"] = mutateLikeAD(asString(create["SamAccountName"]), fakeSAMMaxLen)
 	}

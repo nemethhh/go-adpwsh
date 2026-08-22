@@ -395,6 +395,39 @@ func TestFakeCreateSamUniquenessUsesMutatedValue(t *testing.T) {
 	}
 }
 
+// TestFakeCreateSamUniquenessStableAtTruncationBoundary covers the case where
+// the 20-char truncation boundary lands on an internal whitespace character.
+// mutateLikeAD must be idempotent: truncating "abcdefghijklmnopqrs zzzzz" to 20
+// chars yields "abcdefghijklmnopqrs " (trailing space at the cut), and a
+// second application must not then trim that away to a 19-char result. If it
+// did, the uniqueness check (one application, in handleCreate) and the stored
+// value (a second application, inside applySplat) would disagree, and two
+// creates sharing this exact raw sam would both succeed instead of the second
+// being rejected as already-exists.
+func TestFakeCreateSamUniquenessStableAtTruncationBoundary(t *testing.T) {
+	c, _ := newClient(t)
+	ctx := context.Background()
+
+	if _, err := c.OU.Create(ctx, adpwsh.OUSpec{Name: "Staff", Container: "DC=corp,DC=local"}); err != nil {
+		t.Fatal(err)
+	}
+	const raw = "abcdefghijklmnopqrs zzzzz" // space at index 19: the truncation boundary
+	if _, err := c.Group.Create(ctx, adpwsh.GroupSpec{
+		Name: "Boundary1", SamAccountName: raw, Container: "OU=Staff,DC=corp,DC=local",
+		Scope: adpwsh.GroupScopeGlobal,
+	}); err != nil {
+		t.Fatalf("create first group: %v", err)
+	}
+
+	_, err := c.Group.Create(ctx, adpwsh.GroupSpec{
+		Name: "Boundary2", SamAccountName: raw, Container: "OU=Staff,DC=corp,DC=local",
+		Scope: adpwsh.GroupScopeGlobal,
+	})
+	if !errors.Is(err, adpwsh.ErrAlreadyExists) {
+		t.Fatalf("second create with the identical raw sam %q = %v, want KindAlreadyExists", raw, err)
+	}
+}
+
 func TestDirectoryDACLGrantIdempotentAndRevokeSpecific(t *testing.T) {
 	d := fake.NewDirectory()
 	guid := d.Seed("organizationalUnit", "Staff", "DC=corp,DC=local", nil)
