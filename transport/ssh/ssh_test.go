@@ -133,7 +133,7 @@ func TestSSHRunsTheDocumentedCommandWithPayloadOnStdin(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("server saw %d requests", len(reqs))
 	}
-	want := "pwsh -NoProfile -NonInteractive -EncodedCommand QQBCAA=="
+	want := `"pwsh" -NoProfile -NonInteractive -EncodedCommand QQBCAA==`
 	if reqs[0].Command != want {
 		t.Errorf("command = %q, want %q", reqs[0].Command, want)
 	}
@@ -236,13 +236,20 @@ func TestSSHCancellationStopsARun(t *testing.T) {
 }
 
 // A command short enough for -EncodedCommand must never take the SFTP
-// fallback: no -File on the command line.
+// fallback: no -File on the command line. PwshPath is set to a real
+// install-style path containing a space (the normal
+// "C:\Program Files\PowerShell\7\pwsh.exe") specifically so an unquoted
+// command — which cmd.exe, the DefaultShell this fix targets, would split on
+// the space and fail to run — is caught here rather than only working
+// because tests default to the space-free "pwsh".
 func TestRunSmallCommandUsesEncodedCommand(t *testing.T) {
 	s := newTestServer(t, "svc_tf", "hunter2")
 	s.Reply = func(execRequest) (string, string, int) {
 		return "<<<TFAD:BEGIN>>>\r\n{\"ok\":true,\"data\":{}}\r\n<<<TFAD:END>>>\r\n", "", 0
 	}
-	tr, err := adssh.New(dialConfig(s, "svc_tf", "hunter2"))
+	cfg := dialConfig(s, "svc_tf", "hunter2")
+	cfg.PwshPath = `C:\Program Files\PowerShell\7\pwsh.exe`
+	tr, err := adssh.New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -256,7 +263,7 @@ func TestRunSmallCommandUsesEncodedCommand(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("server saw %d requests", len(reqs))
 	}
-	want := "pwsh -NoProfile -NonInteractive -EncodedCommand QQBCAA=="
+	want := `"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -NonInteractive -EncodedCommand QQBCAA==`
 	if reqs[0].Command != want {
 		t.Errorf("command = %q, want %q", reqs[0].Command, want)
 	}
@@ -268,6 +275,11 @@ func TestRunSmallCommandUsesEncodedCommand(t *testing.T) {
 // A command at or beyond the large-command threshold must be written to a
 // temp file over SFTP and run with -File, with the payload still arriving on
 // the exec session's stdin, and the temp file removed once Run returns.
+// PwshPath is set to a real install-style path containing a space (the
+// normal "C:\Program Files\PowerShell\7\pwsh.exe") specifically so an
+// unquoted command — which cmd.exe, the DefaultShell this fix targets, would
+// split on the space and fail to run — is caught here rather than only
+// working because tests default to the space-free "pwsh".
 func TestRunLargeCommandUsesSFTP(t *testing.T) {
 	s := newTestServer(t, "svc_tf", "hunter2")
 
@@ -291,6 +303,7 @@ func TestRunLargeCommandUsesSFTP(t *testing.T) {
 	remoteDir := t.TempDir()
 	cfg := dialConfig(s, "svc_tf", "hunter2")
 	cfg.RemoteTempDir = remoteDir
+	cfg.PwshPath = `C:\Program Files\PowerShell\7\pwsh.exe`
 	tr, err := adssh.New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -311,7 +324,7 @@ func TestRunLargeCommandUsesSFTP(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 
-	wantCmd := `pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + gotFilePath + `"`
+	wantCmd := `"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + gotFilePath + `"`
 	if gotCommand != wantCmd {
 		t.Errorf("command = %q, want %q", gotCommand, wantCmd)
 	}

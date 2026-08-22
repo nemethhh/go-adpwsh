@@ -113,8 +113,11 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 		// but the argument still becomes part of the process command line,
 		// which a cmd.exe DefaultShell caps at roughly 8191 characters. That
 		// length limit, not quoting, is why this path only handles commands
-		// under largeCommandThreshold.
-		cmd := t.cfg.PwshPath + " -NoProfile -NonInteractive -EncodedCommand " + encodedCommand
+		// under largeCommandThreshold. PwshPath is quoted unconditionally
+		// (safe even for the space-free default "pwsh") because the real
+		// install path, e.g. "C:\Program Files\PowerShell\7\pwsh.exe",
+		// contains a space cmd.exe would otherwise split on.
+		cmd := `"` + t.cfg.PwshPath + `" -NoProfile -NonInteractive -EncodedCommand ` + encodedCommand
 		return t.runOnSession(ctx, client, cmd, payload)
 	}
 	return t.runLarge(ctx, client, encodedCommand, payload)
@@ -164,7 +167,8 @@ func (t *Transport) runLarge(ctx context.Context, client *ssh.Client, encodedCom
 	// so a GPO-hardened host (AllSigned/Restricted) would otherwise refuse
 	// every large op with "running scripts is disabled on this system."
 	// -ExecutionPolicy Bypass makes -File behave like -EncodedCommand did.
-	cmd := t.cfg.PwshPath + ` -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + remote + `"`
+	// PwshPath is quoted for the same reason as the small-command path above.
+	cmd := `"` + t.cfg.PwshPath + `" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "` + remote + `"`
 	return t.runOnSession(ctx, client, cmd, payload)
 }
 
