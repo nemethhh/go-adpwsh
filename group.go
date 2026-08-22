@@ -250,10 +250,11 @@ func (g *GroupClient) Members(ctx context.Context, group Identity) ([]Member, er
 }
 
 // MembersRecursive reads a group's effective membership: the leaf accounts
-// (users/computers, and empty groups) reachable through nested groups, matching
-// Get-ADGroupMember -Recursive. Intermediate group objects are traversed but not
-// returned. Primary-group-only membership (e.g. a user's primary Domain Users)
-// is not included — it is stored via primaryGroupID, not the member attribute.
+// (users and computers) reachable through nested groups, matching
+// Get-ADGroupMember -Recursive. Group objects are traversed but never returned —
+// not even an empty nested group (confirmed against a real domain). Primary-group-only
+// membership (e.g. a user's primary Domain Users) is not included — it is stored
+// via primaryGroupID, not the member attribute.
 func (g *GroupClient) MembersRecursive(ctx context.Context, group Identity) ([]Member, error) {
 	const op = "Group.MembersRecursive"
 	var out struct {

@@ -268,6 +268,59 @@ func TestDirectoryMembershipRecursive(t *testing.T) {
 	}
 }
 
+// TestDirectoryMembershipRecursiveDedup proves a leaf reachable through more than
+// one nested path (a diamond) is returned exactly once.
+func TestDirectoryMembershipRecursiveDedup(t *testing.T) {
+	d := fake.NewDirectory()
+	parent := d.Seed("group", "parent", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-4001"})
+	childA := d.Seed("group", "childA", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-4002"})
+	childB := d.Seed("group", "childB", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-4003"})
+	user := d.Seed("user", "shared", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-4101"})
+
+	// parent → {childA, childB}; both children → the same user (a diamond).
+	d.Handle(fake.Call{Op: "group_members_add", Payload: map[string]any{"identity": parent, "members": []any{childA, childB}}})
+	d.Handle(fake.Call{Op: "group_members_add", Payload: map[string]any{"identity": childA, "members": []any{user}}})
+	d.Handle(fake.Call{Op: "group_members_add", Payload: map[string]any{"identity": childB, "members": []any{user}}})
+
+	r := d.Handle(fake.Call{Op: "group_members_read_recursive", Payload: map[string]any{"identity": parent}})
+	members := r.Data.(map[string]any)["members"].([]any)
+	if len(members) != 1 {
+		t.Fatalf("recursive members = %d (%v), want the shared user exactly once", len(members), members)
+	}
+	if got := members[0].(map[string]any)["objectGUID"]; got != user {
+		t.Errorf("leaf = %v, want user %s", got, user)
+	}
+}
+
+// TestDirectoryMembershipRecursiveSkipsEmptyGroups pins the fake to the real
+// Get-ADGroupMember -Recursive behavior confirmed on the lab: a group object is
+// never returned, not even an empty nested group — only leaf user/computer
+// accounts are.
+func TestDirectoryMembershipRecursiveSkipsEmptyGroups(t *testing.T) {
+	d := fake.NewDirectory()
+	parent := d.Seed("group", "parent", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-5001"})
+	empty := d.Seed("group", "empty", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-5002"})
+	nonEmpty := d.Seed("group", "nonEmpty", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-5003"})
+	user := d.Seed("user", "leaf", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-5101"})
+
+	// parent → {empty (no members), nonEmpty → user}.
+	d.Handle(fake.Call{Op: "group_members_add", Payload: map[string]any{"identity": nonEmpty, "members": []any{user}}})
+	d.Handle(fake.Call{Op: "group_members_add", Payload: map[string]any{"identity": parent, "members": []any{empty, nonEmpty}}})
+
+	r := d.Handle(fake.Call{Op: "group_members_read_recursive", Payload: map[string]any{"identity": parent}})
+	members := r.Data.(map[string]any)["members"].([]any)
+	if len(members) != 1 {
+		t.Fatalf("recursive members = %d (%v), want only the leaf user (no group objects)", len(members), members)
+	}
+	m := members[0].(map[string]any)
+	if m["objectGUID"] != user {
+		t.Errorf("leaf = %v, want user %s", m["objectGUID"], user)
+	}
+	if m["objectClass"] == "group" {
+		t.Errorf("a group object was returned (%v); recursive must return only leaf accounts", m)
+	}
+}
+
 func TestDirectoryDACLGrantIdempotentAndRevokeSpecific(t *testing.T) {
 	d := fake.NewDirectory()
 	guid := d.Seed("organizationalUnit", "Staff", "DC=corp,DC=local", nil)
