@@ -28,6 +28,9 @@ func TestClassify(t *testing.T) {
 		// The code overrides the type: an ADException carrying the
 		// already-exists code is an already-exists, not an unknown.
 		{"code beats type", "Microsoft.ActiveDirectory.Management.ADException", 0x1392, KindAlreadyExists},
+		// An OU create collision: real AD raises a bare ADException whose code
+		// is the name-already-exists form, never the 0x1392 identity form.
+		{"OU name already exists", "Microsoft.ActiveDirectory.Management.ADException", 0x2071, KindAlreadyExists},
 		// With no code, the type is the only signal.
 		{"type only, not found", "Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException", 0, KindNotFound},
 		{"type only, resolution", "Microsoft.ActiveDirectory.Management.ADIdentityResolutionException", 0, KindNotFound},

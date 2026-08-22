@@ -106,7 +106,7 @@ try {
                 $objType = if ($ace.objectType) { [Guid]$ace.objectType } else { [Guid]::Empty }
                 $inhType = if ($ace.inheritedObjectType) { [Guid]$ace.inheritedObjectType } else { [Guid]::Empty }
                 $rule = [System.DirectoryServices.ActiveDirectoryAccessRule]::new($sid, $rights, $type, $objType, $inh, $inhType)
-                $null = $acl.RemoveAccessRuleSpecific($rule)
+                $null = $acl.RemoveAccessRule($rule)
             }
             Set-Acl -Path $path -AclObject $acl
             $obj = Get-ADObject -Identity $dn -Properties objectGUID @common

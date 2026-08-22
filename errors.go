@@ -162,6 +162,7 @@ var classByCode = map[int]Kind{
 	0x2030: KindNotFound,      // ERROR_DS_NO_SUCH_OBJECT
 	0x2035: KindConstraint,    // ERROR_DS_UNWILLING_TO_PERFORM
 	0x2037: KindConstraint,    // ERROR_DS_NAMING_VIOLATION
+	0x2071: KindAlreadyExists, // ERROR_DS_OBJ_STRING_NAME_EXISTS: a name already in use. New-ADOrganizationalUnit on a duplicate raises ADException carrying this code, not the 0x1392 identity form users/groups raise.
 	0x2076: KindConstraint,    // ERROR_DS_ATT_IS_NOT_ON_OBJ
 	0x2077: KindConstraint,    // ERROR_DS_ILLEGAL_MOD_OPERATION
 	0x207E: KindConstraint,    // ERROR_DS_ATT_ALREADY_EXISTS
