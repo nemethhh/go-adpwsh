@@ -8,8 +8,8 @@ import (
 
 // ACLClient reads and writes the discretionary ACL of a directory object. It is
 // never authoritative over the whole DACL: Grant adds explicit ACEs and Revoke
-// removes exactly the ACEs named, leaving inherited entries and other trustees
-// untouched.
+// subtracts the rights it names from the matching explicit ACE, leaving
+// inherited entries and other trustees untouched.
 type ACLClient struct{ c *core }
 
 type aceJSON struct {
@@ -118,8 +118,14 @@ func (a *ACLClient) Grant(ctx context.Context, target Identity, aces []ACE) erro
 	return a.c.replicate(ctx, out.GUID)
 }
 
-// Revoke removes exactly the ACEs named from target's DACL. Removing an ACE that
-// is absent is a no-op, so Revoke is idempotent.
+// Revoke subtracts the rights named by each ACE from target's DACL. It uses
+// .NET RemoveAccessRule, so it removes the named rights from the matching
+// explicit ACE (same trustee, type and scope) even when Active Directory has
+// coalesced several grants into one larger ACE — the case RemoveAccessRuleSpecific
+// could not reach, because AddAccessRule unions masks on grant. For an ACE that
+// stands alone, subtracting its whole mask empties and drops it, so the common
+// case is unchanged. Revoking rights that are already absent is a no-op, so
+// Revoke stays idempotent.
 func (a *ACLClient) Revoke(ctx context.Context, target Identity, aces []ACE) error {
 	const op = "ACL.Revoke"
 	if len(aces) == 0 {
