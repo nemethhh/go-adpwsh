@@ -63,10 +63,11 @@ func TestScriptInvariants(t *testing.T) {
 
 func TestScriptComposesMembershipOps(t *testing.T) {
 	cases := map[string]string{
-		OpGroupMembersRead:   "-Properties member",
-		OpGroupMembersAdd:    "Add-ADGroupMember",
-		OpGroupMembersRemove: "Remove-ADGroupMember",
-		OpGroupMemberCheck:   "Test-AdMember",
+		OpGroupMembersRead:          "-Properties member",
+		OpGroupMembersReadRecursive: "-Recursive",
+		OpGroupMembersAdd:           "Add-ADGroupMember",
+		OpGroupMembersRemove:        "Remove-ADGroupMember",
+		OpGroupMemberCheck:          "Test-AdMember",
 	}
 	for op, want := range cases {
 		s, err := Script(op)

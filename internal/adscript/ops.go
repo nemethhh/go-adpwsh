@@ -17,10 +17,11 @@ const (
 	OpGroupUpdate     = "group_update"
 	OpGroupDelete     = "group_delete"
 
-	OpGroupMembersRead   = "group_members_read"
-	OpGroupMembersAdd    = "group_members_add"
-	OpGroupMembersRemove = "group_members_remove"
-	OpGroupMemberCheck   = "group_member_check"
+	OpGroupMembersRead          = "group_members_read"
+	OpGroupMembersReadRecursive = "group_members_read_recursive"
+	OpGroupMembersAdd           = "group_members_add"
+	OpGroupMembersRemove        = "group_members_remove"
+	OpGroupMemberCheck          = "group_member_check"
 
 	OpUserCreate      = "user_create"
 	OpUserRead        = "user_read"
@@ -42,7 +43,7 @@ var ops = []string{
 	OpRootDSE, OpDCList, OpDeletedProbe, OpReplicate, OpReplicateVerify,
 	OpOUCreate, OpOURead, OpOUUpdate, OpOUDelete,
 	OpGroupCreate, OpGroupRead, OpGroupUpdate, OpGroupDelete,
-	OpGroupMembersRead, OpGroupMembersAdd, OpGroupMembersRemove, OpGroupMemberCheck,
+	OpGroupMembersRead, OpGroupMembersReadRecursive, OpGroupMembersAdd, OpGroupMembersRemove, OpGroupMemberCheck,
 	OpUserCreate, OpUserRead, OpUserUpdate, OpUserDelete, OpUserSetPassword,
 	OpOUSearch, OpGroupSearch, OpUserSearch,
 	OpACLRead, OpACLGrant, OpACLRevoke, OpSchemaResolve,
