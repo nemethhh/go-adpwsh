@@ -249,6 +249,28 @@ func (g *GroupClient) Members(ctx context.Context, group Identity) ([]Member, er
 	return members, nil
 }
 
+// MembersRecursive reads a group's effective membership: the leaf accounts
+// (users/computers, and empty groups) reachable through nested groups, matching
+// Get-ADGroupMember -Recursive. Intermediate group objects are traversed but not
+// returned. Primary-group-only membership (e.g. a user's primary Domain Users)
+// is not included — it is stored via primaryGroupID, not the member attribute.
+func (g *GroupClient) MembersRecursive(ctx context.Context, group Identity) ([]Member, error) {
+	const op = "Group.MembersRecursive"
+	var out struct {
+		Members []memberJSON `json:"members"`
+	}
+	if err := g.c.exec(ctx, adscript.OpGroupMembersReadRecursive, map[string]any{
+		"identity": group.identityArg(),
+	}, &out); err != nil {
+		return nil, withIdentity(err, op, group)
+	}
+	members := make([]Member, len(out.Members))
+	for i, m := range out.Members {
+		members[i] = Member{GUID: m.GUID, DN: m.DN, Class: m.Class, SID: m.SID}
+	}
+	return members, nil
+}
+
 // AddMembers adds each member to the group. It is idempotent: a member already
 // present is not an error. A member that does not exist is a real error and is
 // surfaced.

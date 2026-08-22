@@ -225,6 +225,44 @@ func TestGroupMembership(t *testing.T) {
 	}
 }
 
+func TestGroupMembersRecursive(t *testing.T) {
+	ctx := context.Background()
+	dir := fake.NewDirectory()
+	client := mustClient(t, adpwsh.Config{Transport: dir.Transport()})
+
+	parent := dir.Seed("group", "parent", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-4001"})
+	child := dir.Seed("group", "child", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-4002"})
+	user := dir.Seed("user", "leaf", "DC=corp,DC=local", map[string]any{"sid": "S-1-5-21-1-2-3-4101"})
+
+	if err := client.Group.AddMembers(ctx, adpwsh.ByGUID(child), []adpwsh.Identity{adpwsh.ByGUID(user)}); err != nil {
+		t.Fatalf("AddMembers child: %v", err)
+	}
+	if err := client.Group.AddMembers(ctx, adpwsh.ByGUID(parent), []adpwsh.Identity{adpwsh.ByGUID(child)}); err != nil {
+		t.Fatalf("AddMembers parent: %v", err)
+	}
+
+	// Direct read returns the nested group object.
+	direct, err := client.Group.Members(ctx, adpwsh.ByGUID(parent))
+	if err != nil {
+		t.Fatalf("Members: %v", err)
+	}
+	if len(direct) != 1 || direct[0].GUID != child {
+		t.Fatalf("Members = %+v, want [child %s]", direct, child)
+	}
+
+	// Recursive read flattens to the leaf user, excluding the intermediate group.
+	eff, err := client.Group.MembersRecursive(ctx, adpwsh.ByGUID(parent))
+	if err != nil {
+		t.Fatalf("MembersRecursive: %v", err)
+	}
+	if len(eff) != 1 || eff[0].GUID != user {
+		t.Fatalf("MembersRecursive = %+v, want [user %s]", eff, user)
+	}
+	if eff[0].Class != "user" {
+		t.Errorf("leaf class = %q, want user", eff[0].Class)
+	}
+}
+
 // TestGroupMembershipLargeSet drives a 5000-member group through the fake: it
 // proves AddMembers builds and Members decodes a member set far larger than the
 // 1500 ranged-retrieval page, at the Go layer. The real domain proves the cmdlet
