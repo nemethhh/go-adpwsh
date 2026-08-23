@@ -204,46 +204,11 @@ func buildDN(class, name, container string) string {
 	return rdnPrefix(class) + addn.EscapeValue(name) + "," + container
 }
 
-// mutateLikeAD reproduces the two silent adjustments Active Directory makes to a
-// name-like value: it trims surrounding whitespace, and it truncates to the
-// attribute's ceiling. The fake models the directory, so a consumer that sends
-// an out-of-range value sees back what a real DC would have stored — which is
-// what lets the provider's consistency guard be exercised off-domain.
-//
-// It is deliberately idempotent: mutateLikeAD(mutateLikeAD(v, n), n) ==
-// mutateLikeAD(v, n) for any v and n. Truncation can expose a new trailing
-// space (the cut can land right after an internal whitespace character), so
-// the value is trimmed again after truncating. Without that second trim, a
-// value mutated once (as handleCreate does, for its uniqueness check) and the
-// same value mutated twice (as applySplat then does again, when it stores it)
-// could disagree — which would let two creates that share the exact same
-// out-of-range raw value both slip past the already-exists check.
-func mutateLikeAD(value string, maxLen int) string {
-	value = strings.TrimSpace(value)
-	if len(value) > maxLen {
-		value = value[:maxLen]
-	}
-	return strings.TrimSpace(value)
-}
-
-const (
-	fakeCNMaxLen  = 64
-	fakeSAMMaxLen = 20
-)
-
 func (d *Directory) handleCreate(c Call, class string) Response {
 	create := splat(c.Payload, "create")
-	name := mutateLikeAD(asString(create["Name"]), fakeCNMaxLen)
+	name := asString(create["Name"])
 	container := asString(create["Path"])
 	dn := buildDN(class, name, container)
-	// Normalized once, before the uniqueness check, so the duplicate test and
-	// the eventually stored value (applySplat mutates it again downstream;
-	// mutateLikeAD is idempotent, so re-applying it changes nothing) agree —
-	// exactly as name already does by being mutated before dn is built.
-	if _, ok := create["SamAccountName"]; ok {
-		create["SamAccountName"] = mutateLikeAD(asString(create["SamAccountName"]), fakeSAMMaxLen)
-	}
-	sam := asString(create["SamAccountName"])
 
 	for _, o := range d.objects {
 		if strings.EqualFold(o.DN, dn) && !o.Deleted {
@@ -251,14 +216,14 @@ func (d *Directory) handleCreate(c Call, class string) Response {
 		}
 		if !o.Deleted && class != "organizationalUnit" &&
 			asString(o.Data["samAccountName"]) != "" &&
-			asString(o.Data["samAccountName"]) == sam {
+			asString(o.Data["samAccountName"]) == asString(create["SamAccountName"]) {
 			return alreadyExists(o.DN)
 		}
 		// A tombstone still holds the name, which is the condition rule 8
 		// exists to name.
 		if o.Deleted && (strings.EqualFold(o.DN, dn) ||
 			(asString(o.Data["samAccountName"]) != "" &&
-				asString(o.Data["samAccountName"]) == sam)) {
+				asString(o.Data["samAccountName"]) == asString(create["SamAccountName"]))) {
 			return alreadyExists(dn)
 		}
 	}
@@ -341,9 +306,6 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 			o.Data["category"] = strings.ToLower(asString(v))
 		default:
 			if field, ok := paramToField[param]; ok {
-				if field == "samAccountName" {
-					v = mutateLikeAD(asString(v), fakeSAMMaxLen)
-				}
 				o.Data[field] = v
 			}
 		}
@@ -372,9 +334,8 @@ func (d *Directory) handleUpdate(c Call) Response {
 		d.applySplat(o, set)
 	}
 	if rename := splat(c.Payload, "rename"); rename != nil {
-		newName := mutateLikeAD(asString(rename["NewName"]), fakeCNMaxLen)
-		o.Data["name"] = newName
-		o.DN = buildDN(o.Class, newName, parentOf(o.DN))
+		o.Data["name"] = asString(rename["NewName"])
+		o.DN = buildDN(o.Class, asString(rename["NewName"]), parentOf(o.DN))
 		o.Data["distinguishedName"] = o.DN
 	}
 	if move := splat(c.Payload, "move"); move != nil {
