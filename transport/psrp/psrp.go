@@ -72,10 +72,14 @@ func newClient(cfg Config) (executor, error) {
 	return psrp.New(cfg.Host, pc)
 }
 
-// New builds the client pool. It does not dial; each client connects lazily the
-// first time it is checked out, so the operation ctx governs the dial and a
-// transient failure does not permanently poison that client.
+// New validates the configuration, then builds the client pool. It does not
+// dial; each client connects lazily the first time it is checked out, so the
+// operation ctx governs the dial and a transient failure does not permanently
+// poison that client.
 func New(cfg Config) (*Transport, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "psrp.New", Err: err}
+	}
 	cfg = cfg.WithDefaults()
 	t := &Transport{cfg: cfg, idle: make(chan *conn, cfg.Concurrency)}
 	for i := 0; i < cfg.Concurrency; i++ {

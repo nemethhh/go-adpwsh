@@ -77,7 +77,7 @@ func (s TransportSpec) Open() (adpwsh.Transport, error) {
 			PwshPath:              s.PwshPath,
 		})
 	case "psrp":
-		cfg := adpsrp.Config{
+		return adpsrp.New(adpsrp.Config{
 			Host:               s.Host,
 			Port:               s.Port,
 			UseTLS:             s.UseTLS,
@@ -93,15 +93,7 @@ func (s TransportSpec) Open() (adpwsh.Transport, error) {
 			ConfigurationName:  s.ConfigurationName,
 			Concurrency:        s.Concurrency,
 			Timeout:            s.Timeout,
-		}
-		// Unlike adssh.New, adpsrp.New does not validate the raw config itself
-		// (Validate is meant to run before WithDefaults, per its doc comment);
-		// call it here so a missing host is reported before the pool tries to
-		// build clients.
-		if err := cfg.Validate(); err != nil {
-			return nil, err
-		}
-		return adpsrp.New(cfg)
+		})
 	case "":
 		return nil, errors.New("--transport is required; pass local, ssh, or psrp")
 	default:
