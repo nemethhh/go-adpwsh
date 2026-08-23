@@ -27,3 +27,12 @@ func TestOpenDefersToTheLibrarysValidation(t *testing.T) {
 		t.Errorf("the library's own message must reach the operator: %v", err)
 	}
 }
+
+func TestOpenPSRPRequiresHost(t *testing.T) {
+	// psrp is now a known kind; opening it with no host is a config error,
+	// not an "unknown transport" error.
+	_, err := (TransportSpec{Kind: "psrp"}).Open()
+	if err == nil || !strings.Contains(err.Error(), "host") {
+		t.Fatalf("want a host-required error, got %v", err)
+	}
+}

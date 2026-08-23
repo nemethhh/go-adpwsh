@@ -7,6 +7,7 @@ import (
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
 	adlocal "github.com/nemethhh/go-adpwsh/transport/local"
+	adpsrp "github.com/nemethhh/go-adpwsh/transport/psrp"
 	adssh "github.com/nemethhh/go-adpwsh/transport/ssh"
 )
 
@@ -14,12 +15,12 @@ import (
 // flags and the lab test fills it from the environment, so both open a
 // transport exactly one way.
 //
-// The exporter opens no transport of its own: local and ssh both already
+// The exporter opens no transport of its own: local, ssh and psrp all already
 // satisfy the library, so an export inherits their framing, timeouts and error
 // classification, and an operator exports from wherever they already run the
 // provider.
 type TransportSpec struct {
-	Kind     string // "local" or "ssh"
+	Kind     string // "local", "ssh", or "psrp"
 	Timeout  time.Duration
 	PwshPath string
 
@@ -31,6 +32,22 @@ type TransportSpec struct {
 	SSHKnownHostsFile        string
 	SSHHostKey               string
 	SSHInsecureIgnoreHostKey bool
+
+	// psrp fields; see transport/psrp.Config for what each one means.
+	Host               string
+	Port               int
+	UseTLS             bool
+	InsecureSkipVerify bool
+	Username           string
+	Password           string
+	Domain             string
+	SPN                string
+	Realm              string
+	Krb5ConfPath       string
+	CCachePath         string
+	KeytabPath         string
+	ConfigurationName  string
+	Concurrency        int
 }
 
 // Open builds the transport. Validation is the library's — a missing host key
@@ -59,9 +76,35 @@ func (s TransportSpec) Open() (adpwsh.Transport, error) {
 			Timeout:               s.Timeout,
 			PwshPath:              s.PwshPath,
 		})
+	case "psrp":
+		cfg := adpsrp.Config{
+			Host:               s.Host,
+			Port:               s.Port,
+			UseTLS:             s.UseTLS,
+			InsecureSkipVerify: s.InsecureSkipVerify,
+			Username:           s.Username,
+			Password:           s.Password,
+			Domain:             s.Domain,
+			SPN:                s.SPN,
+			Realm:              s.Realm,
+			Krb5ConfPath:       s.Krb5ConfPath,
+			CCachePath:         s.CCachePath,
+			KeytabPath:         s.KeytabPath,
+			ConfigurationName:  s.ConfigurationName,
+			Concurrency:        s.Concurrency,
+			Timeout:            s.Timeout,
+		}
+		// Unlike adssh.New, adpsrp.New does not validate the raw config itself
+		// (Validate is meant to run before WithDefaults, per its doc comment);
+		// call it here so a missing host is reported before the pool tries to
+		// build clients.
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
+		return adpsrp.New(cfg)
 	case "":
-		return nil, errors.New("--transport is required; pass local or ssh")
+		return nil, errors.New("--transport is required; pass local, ssh, or psrp")
 	default:
-		return nil, fmt.Errorf("unknown transport %q; pass local or ssh", s.Kind)
+		return nil, fmt.Errorf("unknown transport %q; pass local, ssh, or psrp", s.Kind)
 	}
 }
