@@ -1,8 +1,8 @@
 # go-adpwsh
 
 A Go library that drives Active Directory through the `ActiveDirectory`
-PowerShell module — either on the Windows host the caller runs on, or on a
-Windows jump box reached over SSH.
+PowerShell module — on the Windows host the caller runs on, on a Windows jump
+box reached over SSH, or on a Windows host reached over WinRM/PSRP.
 
 It is a separate repository from the Terraform provider that consumes it for one
 reason: managing AD from Go is useful without Terraform, and a library that
@@ -12,9 +12,9 @@ any Terraform package enters the import graph, including through test imports.
 
 ## Topology
 
-Two transports, one contract. Both invoke the same fixed command with the same
-JSON payload on stdin, and both hand stdout, stderr and the exit code back
-verbatim.
+Three transports, one contract. All three invoke the same fixed command with
+the same JSON payload on stdin, and all three hand stdout, stderr and the exit
+code back verbatim.
 
 **On-host — `transport/local`.** The caller already runs on a domain-joined
 Windows host, so the process holds a Kerberos TGT for whoever launched it and
@@ -46,10 +46,21 @@ execution removes the problem instead of working around it, and
 `Config.Credential` remains available there for the case where the operations
 must authenticate as some account other than the one that launched the process.
 
+**Remote — `transport/psrp`.** The caller runs anywhere and reaches a Windows
+host over WinRM/PSRP. By default it authenticates with Kerberos over HTTP
+(port 5985), using the caller's own ambient Kerberos ticket; `UseTLS` switches
+it to HTTPS on port 5986. The target host needs the `PowerShell.7` WinRM
+endpoint registered (`Enable-PSRemoting` run from `pwsh` 7) and
+`RSAT-AD-PowerShell` installed, and a non-admin connecting account must belong
+to the local **Remote Management Users** group. The AD cmdlets still reach the
+domain controller over ADWS (port 9389), so this transport is pointed either
+straight at a DC or at a member/management host together with domain
+credentials to cross the same Kerberos double hop `transport/ssh` works around.
+
 **Cost per operation, stated so it is not a surprise.** Every operation pays a
 fresh `Import-Module ActiveDirectory`, roughly 1–3 seconds on Windows. This is
 inherent to the one-shot-per-operation execution contract, and it is the same
-for both transports. `Concurrency` bounds how many run at once — 4 by default,
+for every transport. `Concurrency` bounds how many run at once — 4 by default,
 because each is a real process with real memory cost.
 
 ## Example
@@ -111,14 +122,14 @@ These are enforced at the module boundary. A consumer cannot opt out of them.
 
 ## Extension seams
 
-- **`Transport`** is the only I/O seam. Three ship: `transport/local` (`pwsh` as
-  a child process of the caller), `transport/ssh` (a Windows jump box), and
-  `transport/fake` (a programmable double plus `fake.Directory`, a small
-  in-memory AD). Envelope parsing, error classification, retry and the
-  replication wait all live *above* it, which is why `transport/local` inherited
-  every property above without restating one of them, and why a future WinRM
-  transport will too. No transport can reinterpret an AD refusal as a transport
-  failure.
+- **`Transport`** is the only I/O seam. Four ship: `transport/local` (`pwsh` as
+  a child process of the caller), `transport/ssh` (a Windows jump box),
+  `transport/psrp` (WinRM/PSRP to a Windows host), and `transport/fake` (a
+  programmable double plus `fake.Directory`, a small in-memory AD). Envelope
+  parsing, error classification, retry and the replication wait all live
+  *above* it, which is why `transport/local` inherited every property above
+  without restating one of them, and why `transport/psrp` did too. No
+  transport can reinterpret an AD refusal as a transport failure.
 - **`Catalog`** will be the schema seam. The types have landed — `schema.Catalog`
   and its reader — and `make schema` produces the catalog they read; `Config.Catalog`
   has not, and adding it later is additive.
