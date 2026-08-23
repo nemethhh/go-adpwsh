@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode/utf16"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
 	psrp "github.com/smnsjas/go-psrp/client"
@@ -17,23 +16,6 @@ import (
 // $PSHOME is correct in the runspace, so LoadFrom by full path succeeds; it is
 // best-effort so it is a harmless no-op where the runtime already resolves it.
 const preload = `try { [System.Reflection.Assembly]::LoadFrom("$PSHOME\System.ServiceModel.NetFramingBase.dll") | Out-Null } catch {}`
-
-// decodeEncodedCommand reverses go-adpwsh's -EncodedCommand encoding
-// (UTF-16LE then base64) back to the original script text.
-func decodeEncodedCommand(enc string) (string, error) {
-	raw, err := base64.StdEncoding.DecodeString(enc)
-	if err != nil {
-		return "", fmt.Errorf("psrp: decode EncodedCommand base64: %w", err)
-	}
-	if len(raw)%2 != 0 {
-		return "", errors.New("psrp: EncodedCommand is not valid UTF-16LE (odd byte count)")
-	}
-	u := make([]uint16, len(raw)/2)
-	for i := range u {
-		u[i] = uint16(raw[2*i]) | uint16(raw[2*i+1])<<8
-	}
-	return string(utf16.Decode(u)), nil
-}
 
 // buildWrapper prepends payload delivery (base64 -> [Console]::SetIn, so the
 // script's [Console]::In.ReadToEnd() returns the JSON) and the WCF preload,

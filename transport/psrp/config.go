@@ -51,7 +51,8 @@ func (c Config) WithDefaults() Config {
 }
 
 // Validate is called on the raw config, before WithDefaults, so a negative
-// concurrency is caught before it is normalised to 1.
+// concurrency is rejected here rather than silently accepted (WithDefaults
+// later defaults an unset value).
 func (c Config) Validate() error {
 	if c.Host == "" {
 		return errors.New("psrp: host is required")

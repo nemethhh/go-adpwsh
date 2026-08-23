@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
+	"github.com/nemethhh/go-adpwsh/internal/adscript"
 	psrp "github.com/smnsjas/go-psrp/client"
 )
 
@@ -85,7 +86,7 @@ func New(cfg Config) (*Transport, error) {
 	for i := 0; i < cfg.Concurrency; i++ {
 		c, err := newClient(cfg)
 		if err != nil {
-			return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "New", Err: err}
+			return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "psrp.New", Err: err}
 		}
 		t.idle <- &conn{exec: c}
 	}
@@ -106,7 +107,7 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 		return adpwsh.Result{}, err
 	}
 
-	script, err := decodeEncodedCommand(encodedCommand)
+	script, err := adscript.DecodeCommand(encodedCommand)
 	if err != nil {
 		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
 	}

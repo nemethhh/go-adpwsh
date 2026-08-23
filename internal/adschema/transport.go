@@ -53,7 +53,7 @@ type TransportSpec struct {
 // Open builds the transport. Validation is the library's — a missing host key
 // source or two auth methods produce its message, not a second opinion.
 //
-// Concurrency is 1: an export is a single execution.
+// Concurrency is 1 for local and ssh; psrp uses the caller-provided concurrency.
 func (s TransportSpec) Open() (adpwsh.Transport, error) {
 	switch s.Kind {
 	case "local":

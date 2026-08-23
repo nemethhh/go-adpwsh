@@ -23,23 +23,6 @@ func encode(s string) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
-func TestDecodeEncodedCommandRoundTrip(t *testing.T) {
-	want := "Write-Output 'héllo'"
-	got, err := decodeEncodedCommand(encode(want))
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got != want {
-		t.Errorf("decode = %q, want %q", got, want)
-	}
-}
-
-func TestDecodeEncodedCommandBadBase64(t *testing.T) {
-	if _, err := decodeEncodedCommand("not base64!!"); err == nil {
-		t.Error("want error for bad base64, got nil")
-	}
-}
-
 func TestBuildWrapperDeliversPayloadAndPreload(t *testing.T) {
 	w := buildWrapper("Get-ADDomain", []byte(`{"server":null}`))
 	// payload arrives as base64 inside a SetIn call
