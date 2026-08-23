@@ -43,6 +43,9 @@ func (c *conn) ensureConnected(ctx context.Context) error {
 type Transport struct {
 	cfg  Config
 	idle chan *conn // buffered to Concurrency; every Run checks one out and returns it
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 var _ adpwsh.Transport = (*Transport)(nil)
@@ -116,19 +119,27 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 }
 
 // Close implements adpwsh.Transport. It drains and closes every pooled client;
-// it assumes no Run is in flight (the provider closes at shutdown).
+// it assumes no Run is in flight (the provider closes at shutdown). Close is
+// idempotent: a repeated call is a safe no-op returning the first call's
+// result, rather than blocking forever on an already-drained idle channel.
 func (t *Transport) Close() error {
-	var firstErr error
-	for i := 0; i < t.cfg.Concurrency; i++ {
-		c := <-t.idle
-		if !c.up {
-			continue
+	t.closeOnce.Do(func() {
+		var firstErr error
+		for i := 0; i < t.cfg.Concurrency; i++ {
+			c := <-t.idle
+			c.mu.Lock()
+			up := c.up
+			c.mu.Unlock()
+			if !up {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), t.cfg.Timeout)
+			if err := c.exec.Close(ctx); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			cancel()
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), t.cfg.Timeout)
-		if err := c.exec.Close(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		cancel()
-	}
-	return firstErr
+		t.closeErr = firstErr
+	})
+	return t.closeErr
 }

@@ -17,6 +17,11 @@ type fakeExec struct {
 	lastScript string
 	result     *psrp.Result
 	execErr    error
+
+	// arrived/release, when non-nil, let a test gate concurrency: Execute
+	// signals arrival then blocks until release is closed/sent to.
+	arrived chan struct{}
+	release chan struct{}
 }
 
 func (f *fakeExec) Connect(context.Context) error { return nil }
@@ -26,6 +31,10 @@ func (f *fakeExec) Execute(_ context.Context, s string) (*psrp.Result, error) {
 	f.calls++
 	f.lastScript = s
 	f.mu.Unlock()
+	if f.arrived != nil {
+		f.arrived <- struct{}{}
+		<-f.release
+	}
 	return f.result, f.execErr
 }
 
@@ -87,30 +96,31 @@ func TestRunExecuteErrorIsTransport(t *testing.T) {
 }
 
 // TestPoolCheckoutSpreadsAcrossClients: with a 2-client pool and 2 concurrent
-// Runs, both clients are used (no single client serves both).
+// Runs, both clients are used (no single client serves both). The two Runs
+// are gated inside Execute so this only passes if both conns are genuinely
+// checked out at the same time, not merely round-robined sequentially.
 func TestPoolCheckoutSpreadsAcrossClients(t *testing.T) {
-	f1 := &fakeExec{result: &psrp.Result{}}
-	f2 := &fakeExec{result: &psrp.Result{}}
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	f1 := &fakeExec{result: &psrp.Result{}, arrived: arrived, release: release}
+	f2 := &fakeExec{result: &psrp.Result{}, arrived: arrived, release: release}
 	tr := newTestTransport(f1, f2)
-
-	// Hold both clients busy at once by blocking inside Execute via a barrier.
-	start := make(chan struct{})
-	block := func(f *fakeExec) {
-		orig := f.result
-		_ = orig
-	}
-	block(f1)
-	block(f2)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); <-start; _, _ = tr.Run(context.Background(), encode("x"), nil) }()
+		go func() { defer wg.Done(); _, _ = tr.Run(context.Background(), encode("x"), nil) }()
 	}
-	close(start)
+
+	// Both goroutines must be inside Execute simultaneously for this to
+	// receive twice: with only one conn available, the second Run would
+	// block on checkout and never reach Execute to send here.
+	<-arrived
+	<-arrived
+	close(release)
 	wg.Wait()
 
-	if f1.calls == 0 || f2.calls == 0 {
-		t.Errorf("expected both clients used, got f1=%d f2=%d", f1.calls, f2.calls)
+	if f1.calls != 1 || f2.calls != 1 {
+		t.Errorf("expected each client used exactly once, got f1=%d f2=%d", f1.calls, f2.calls)
 	}
 }
