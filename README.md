@@ -256,6 +256,18 @@ search, and object mutation remains get-by-identity only. The `Catalog`
 interface, the generic `Object` sub-client, and tier-2 `Attributes map[string]any`
 are deliberately absent from this release.
 
+**ServiceAccount** (group Managed Service Account) provides Create, Get, Update,
+Delete, and Search via `ServiceAccountClient`. Supported attributes include
+description, enabled, DNS hostname, service principal names, principals allowed
+to retrieve the managed password, Kerberos encryption types, and account
+expiration; managed password interval and trusted for delegation are also present.
+
+**Computer** provides Create, Get, Update, Delete, and Search via `ComputerClient`.
+Supported attributes include description, enabled, DNS hostname, service principal
+names, constrained delegation (msDS-AllowedToDelegateTo), RBCD (principals
+allowed to delegate to), Kerberos encryption types, and account expiration;
+operating system and version are read-only, and trusted for delegation is present.
+
 ## Licence
 
 MIT.

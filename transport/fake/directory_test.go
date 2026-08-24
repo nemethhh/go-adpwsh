@@ -506,3 +506,157 @@ func TestFakeGMSADeleteAndSearch(t *testing.T) {
 		t.Fatal("read after delete: want not-found, got success")
 	}
 }
+
+// TestFakeComputerCreateRead pins the fake's Computer create defaults: a
+// SamAccountName the caller omits is derived from Name with the trailing "$"
+// AD itself appends, Enabled defaults true (unlike a user), RBCD principals
+// (PrincipalsAllowedToDelegateToAccount) are stored, and the OS-reported
+// fields start empty since nothing provisions them at create.
+func TestFakeComputerCreateRead(t *testing.T) {
+	d := fake.NewDirectory()
+	create := d.Handle(fake.Call{Op: "computer_create", Payload: map[string]any{
+		"create": map[string]any{
+			"Name": "WEB01", "Path": "OU=x,DC=corp,DC=local",
+			"Description":                          "front end",
+			"PrincipalsAllowedToDelegateToAccount": []any{"22222222-2222-2222-2222-222222222222"},
+		},
+		"project": []string{"*"},
+	}})
+	if create.Err != nil {
+		t.Fatalf("create: %+v", create.Err)
+	}
+	out, _ := create.Data.(map[string]any)
+	guid, _ := out["objectGUID"].(string)
+	if guid == "" {
+		t.Fatal("no objectGUID")
+	}
+	if out["samAccountName"] != "WEB01$" {
+		t.Fatalf("sam = %v, want WEB01$ (derived from Name, caller supplied none)", out["samAccountName"])
+	}
+	if out["enabled"] != true {
+		t.Fatalf("enabled = %v, want true (computer default, unlike user)", out["enabled"])
+	}
+	principals, _ := out["principalsAllowed"].([]string)
+	if len(principals) != 1 || principals[0] != "22222222-2222-2222-2222-222222222222" {
+		t.Fatalf("principalsAllowed = %v, want the one RBCD principal given", out["principalsAllowed"])
+	}
+	for _, k := range []string{"operatingSystem", "operatingSystemVersion", "operatingSystemServicePack"} {
+		if out[k] != "" {
+			t.Errorf("%s = %v, want empty (nothing provisions it at create)", k, out[k])
+		}
+	}
+
+	read := d.Handle(fake.Call{Op: "computer_read", Payload: map[string]any{"identity": guid, "project": []string{"*"}}})
+	if read.Err != nil {
+		t.Fatalf("read: %+v", read.Err)
+	}
+	got, _ := read.Data.(map[string]any)
+	if got["samAccountName"] != "WEB01$" {
+		t.Fatalf("sam on read = %v, want WEB01$", got["samAccountName"])
+	}
+	if got["description"] != "front end" {
+		t.Fatalf("description = %v, want front end", got["description"])
+	}
+	// Every key Convert-AdComputer emits must round-trip through the fake, so
+	// one Go decoder handles both backends.
+	for _, k := range []string{
+		"objectGUID", "distinguishedName", "name", "samAccountName", "sid", "enabled",
+		"dnsHostName", "description", "displayName", "location", "managedBy",
+		"trustedForDelegation", "servicePrincipalNames", "allowedToDelegateTo",
+		"principalsAllowed", "kerberosEncryptionType", "accountExpirationDate",
+		"operatingSystem", "operatingSystemVersion", "operatingSystemServicePack",
+	} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("read is missing key %q", k)
+		}
+	}
+}
+
+// TestFakeComputerUpdateFullReplace pins the update contract: SamAccountName
+// still gains AD's trailing "$" on create even when the caller supplies one
+// without it, ServicePrincipalNames and RBCD principals are full-replace,
+// and -Clear empties a string attribute.
+func TestFakeComputerUpdateFullReplace(t *testing.T) {
+	d := fake.NewDirectory()
+	create := d.Handle(fake.Call{Op: "computer_create", Payload: map[string]any{
+		"create": map[string]any{
+			"Name": "WEB02", "SamAccountName": "WEB02",
+			"Path": "OU=x,DC=corp,DC=local", "Description": "orig",
+		},
+	}})
+	if create.Err != nil {
+		t.Fatalf("create: %+v", create.Err)
+	}
+	guid := create.Data.(map[string]any)["objectGUID"].(string)
+	if create.Data.(map[string]any)["samAccountName"] != "WEB02$" {
+		t.Fatalf("sam at create = %v, want WEB02$", create.Data.(map[string]any)["samAccountName"])
+	}
+
+	upd := d.Handle(fake.Call{Op: "computer_update", Payload: map[string]any{
+		"identity": guid,
+		"set": map[string]any{
+			"Identity":                             guid,
+			"Clear":                                []any{"description"},
+			"ServicePrincipalNames":                map[string]any{"Replace": []any{"HOST/web02.corp.local"}},
+			"PrincipalsAllowedToDelegateToAccount": []any{"33333333-3333-3333-3333-333333333333"},
+			"TrustedForDelegation":                 true,
+		},
+	}})
+	if upd.Err != nil {
+		t.Fatalf("update: %+v", upd.Err)
+	}
+	got := upd.Data.(map[string]any)
+	if got["description"] != "" {
+		t.Fatalf("description = %v, want cleared", got["description"])
+	}
+	spn, _ := got["servicePrincipalNames"].([]string)
+	if len(spn) != 1 || spn[0] != "HOST/web02.corp.local" {
+		t.Fatalf("servicePrincipalNames = %v, want [HOST/web02.corp.local]", got["servicePrincipalNames"])
+	}
+	principals, _ := got["principalsAllowed"].([]string)
+	if len(principals) != 1 || principals[0] != "33333333-3333-3333-3333-333333333333" {
+		t.Fatalf("principalsAllowed = %v, want the one RBCD principal given", got["principalsAllowed"])
+	}
+	if got["trustedForDelegation"] != true {
+		t.Fatalf("trustedForDelegation = %v, want true", got["trustedForDelegation"])
+	}
+	if got["samAccountName"] != "WEB02$" {
+		t.Fatalf("samAccountName after update = %v, want unchanged WEB02$", got["samAccountName"])
+	}
+}
+
+// TestFakeComputerDeleteAndSearch exercises computer_search (class-scoped,
+// returns the Convert-shaped JSON) and computer_delete (tombstone +
+// not-found on re-read).
+func TestFakeComputerDeleteAndSearch(t *testing.T) {
+	d := fake.NewDirectory()
+	create := d.Handle(fake.Call{Op: "computer_create", Payload: map[string]any{
+		"create": map[string]any{
+			"Name": "WEB03", "Path": "OU=x,DC=corp,DC=local",
+		},
+	}})
+	if create.Err != nil {
+		t.Fatalf("create: %+v", create.Err)
+	}
+	guid := create.Data.(map[string]any)["objectGUID"].(string)
+
+	search := d.Handle(fake.Call{Op: "computer_search", Payload: map[string]any{
+		"filter": "(objectClass=*)", "searchBase": "DC=corp,DC=local", "scope": "Subtree", "sizeLimit": float64(1000),
+	}})
+	if search.Err != nil {
+		t.Fatalf("search: %+v", search.Err)
+	}
+	results, _ := search.Data.(map[string]any)["results"].([]any)
+	if len(results) != 1 {
+		t.Fatalf("search results = %d, want 1", len(results))
+	}
+
+	del := d.Handle(fake.Call{Op: "computer_delete", Payload: map[string]any{"identity": guid}})
+	if del.Err != nil {
+		t.Fatalf("delete: %+v", del.Err)
+	}
+	read := d.Handle(fake.Call{Op: "computer_read", Payload: map[string]any{"identity": guid}})
+	if read.Err == nil {
+		t.Fatal("read after delete: want not-found, got success")
+	}
+}

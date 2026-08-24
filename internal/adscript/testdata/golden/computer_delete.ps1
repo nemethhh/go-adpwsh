@@ -163,12 +163,8 @@ function Test-AdMember($group, $memberId) {
 
 try {
     $data = & {
-        $r = Get-ADRootDSE @common
-        [ordered]@{
-            dnsHostName          = $r.dnsHostName
-            defaultNamingContext = $r.defaultNamingContext
-            schemaNamingContext  = $r.schemaNamingContext
-        }
+        $null = Remove-ADComputer -Identity $p.identity -Confirm:$false @common
+        [ordered]@{ deleted = $true; verify = (Test-AdPresence $p.identity) }
     }
     $out = @{ ok = $true; data = $data }
 } catch {

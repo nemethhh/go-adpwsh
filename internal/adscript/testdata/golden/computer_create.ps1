@@ -163,12 +163,9 @@ function Test-AdMember($group, $memberId) {
 
 try {
     $data = & {
-        $r = Get-ADRootDSE @common
-        [ordered]@{
-            dnsHostName          = $r.dnsHostName
-            defaultNamingContext = $r.defaultNamingContext
-            schemaNamingContext  = $r.schemaNamingContext
-        }
+        $c = $p.create
+        $new = New-ADComputer @c @common -PassThru
+        Convert-AdComputer (Get-ADComputer -Identity $new.ObjectGUID -Properties $p.project @common)
     }
     $out = @{ ok = $true; data = $data }
 } catch {

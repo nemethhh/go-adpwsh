@@ -163,12 +163,9 @@ function Test-AdMember($group, $memberId) {
 
 try {
     $data = & {
-        $r = Get-ADRootDSE @common
-        [ordered]@{
-            dnsHostName          = $r.dnsHostName
-            defaultNamingContext = $r.defaultNamingContext
-            schemaNamingContext  = $r.schemaNamingContext
-        }
+        $r = @(Get-ADComputer -LDAPFilter $p.filter -SearchBase $p.searchBase `
+                 -SearchScope $p.scope -ResultSetSize $p.sizeLimit -Properties $p.project @common)
+        [ordered]@{ results = @($r | ForEach-Object { Convert-AdComputer $_ }) }
     }
     $out = @{ ok = $true; data = $data }
 } catch {

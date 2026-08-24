@@ -42,3 +42,24 @@ func TestGMSASpecValidate(t *testing.T) {
 		})
 	}
 }
+
+// TestComputerSpecValidate exercises ComputerSpec.validate directly, the same
+// way TestGMSASpecValidate exercises GMSASpec.validate above. The key
+// divergence from gMSA: AD does not enforce the 15-char NetBIOS limit for
+// computer accounts, so ComputerSpec.validate must not cap SamAccountName's
+// length. The 20-char case below is the guard for that requirement.
+func TestComputerSpecValidate(t *testing.T) {
+	base := ComputerSpec{Name: "WEB01", SamAccountName: "WEB01$", Container: "OU=x,DC=corp,DC=local"}
+	if err := base.validate("Computer.Create", true); err != nil {
+		t.Fatalf("valid spec rejected: %v", err)
+	}
+
+	if err := (ComputerSpec{SamAccountName: "WEB01$", Container: "OU=x,DC=corp,DC=local"}).validate("Computer.Create", true); err == nil {
+		t.Error("missing Name should fail")
+	}
+	// Length is NOT capped for computers (unlike gMSA) — AD does not enforce it.
+	long := ComputerSpec{Name: "THISISATWENTYCHARNAME", SamAccountName: "THISISATWENTYCHARNAME$", Container: "OU=x,DC=corp,DC=local"}
+	if err := long.validate("Computer.Create", true); err != nil {
+		t.Errorf("20-char sam must be allowed (AD permits it); got %v", err)
+	}
+}

@@ -140,7 +140,9 @@ func (d *Directory) Handle(c Call) Response {
 		return d.handleCreate(c, "user")
 	case "gmsa_create":
 		return d.handleCreate(c, classGMSA)
-	case "ou_read", "group_read", "user_read", "gmsa_read":
+	case "computer_create":
+		return d.handleCreate(c, classComputer)
+	case "ou_read", "group_read", "user_read", "gmsa_read", "computer_read":
 		o := d.find(asString(c.Payload["identity"]))
 		if o == nil {
 			return notFound(asString(c.Payload["identity"]))
@@ -154,11 +156,13 @@ func (d *Directory) Handle(c Call) Response {
 		return d.handleSearch(c, "user")
 	case "gmsa_search":
 		return d.handleSearch(c, classGMSA)
-	case "ou_update", "group_update", "user_update", "gmsa_update":
+	case "computer_search":
+		return d.handleSearch(c, classComputer)
+	case "ou_update", "group_update", "user_update", "gmsa_update", "computer_update":
 		return d.handleUpdate(c)
 	case "ou_delete":
 		return d.handleOUDelete(c)
-	case "group_delete", "user_delete", "gmsa_delete":
+	case "group_delete", "user_delete", "gmsa_delete", "computer_delete":
 		return d.handleDelete(c)
 	case "user_setpassword":
 		o := d.find(asString(c.Payload["identity"]))
@@ -196,6 +200,11 @@ func (d *Directory) Handle(c Call) Response {
 // read that names it literally still matches.
 const classGMSA = "msDS-GroupManagedServiceAccount"
 
+// classComputer is the class a computer object is stored and dispatched
+// under. Unlike classGMSA this already matches the real AD schema class
+// name, so a search filter that names it literally still matches.
+const classComputer = "computer"
+
 // rdnPrefix is the attribute an object of this class is named by (rdnAttId).
 func rdnPrefix(class string) string {
 	if class == "organizationalUnit" {
@@ -226,6 +235,21 @@ func (d *Directory) handleCreate(c Call, class string) Response {
 		if sam := asString(create["SamAccountName"]); sam != "" && !strings.HasSuffix(sam, "$") {
 			create["SamAccountName"] = sam + "$"
 		}
+	}
+
+	// A computer's sAMAccountName defaults to its Name when the caller does
+	// not supply one, and AD appends "$" either way (lab-confirmed). Deriving
+	// it before the uniqueness scan below keeps that scan comparing like with
+	// like against what a prior create already stored.
+	if class == classComputer {
+		sam := asString(create["SamAccountName"])
+		if sam == "" {
+			sam = name
+		}
+		if !strings.HasSuffix(sam, "$") {
+			sam += "$"
+		}
+		create["SamAccountName"] = sam
 	}
 
 	for _, o := range d.objects {
@@ -286,6 +310,24 @@ func (d *Directory) handleCreate(c Call, class string) Response {
 		obj.Data["kerberosEncryptionType"] = []string{"RC4", "AES128", "AES256"}
 		obj.Data["managedPasswordIntervalInDays"] = 30
 		obj.Data["accountExpirationDate"] = nil
+	case classComputer:
+		obj.Data["samAccountName"] = ""
+		obj.Data["sid"] = "S-1-5-21-1-2-3-" + fmt.Sprint(1000+d.seq)
+		obj.Data["enabled"] = true
+		obj.Data["dnsHostName"] = ""
+		obj.Data["description"] = ""
+		obj.Data["displayName"] = ""
+		obj.Data["location"] = ""
+		obj.Data["managedBy"] = ""
+		obj.Data["trustedForDelegation"] = false
+		obj.Data["servicePrincipalNames"] = []string{}
+		obj.Data["allowedToDelegateTo"] = []string{}
+		obj.Data["principalsAllowed"] = []string{}
+		obj.Data["kerberosEncryptionType"] = []string{}
+		obj.Data["accountExpirationDate"] = nil
+		obj.Data["operatingSystem"] = ""
+		obj.Data["operatingSystemVersion"] = ""
+		obj.Data["operatingSystemServicePack"] = ""
 	}
 	d.applySplat(obj, create)
 	if pw := asString(c.Payload["password"]); pw != "" {
@@ -312,18 +354,27 @@ var paramToField = map[string]string{
 	"DNSHostName":                     "dnsHostName",
 	"TrustedForDelegation":            "trustedForDelegation",
 	"ManagedPasswordIntervalInDays":   "managedPasswordIntervalInDays",
+	"Location":                        "location",
 }
 
 // clearToField maps an LDAP name in -Clear to the model field it empties.
 var clearToField = map[string]string{
-	"description":       "description",
-	"displayName":       "displayName",
-	"givenName":         "givenName",
-	"sn":                "surname",
-	"userPrincipalName": "userPrincipalName",
-	"managedBy":         "managedBy",
-	"accountExpires":    "accountExpirationDate",
-	"dNSHostName":       "dnsHostName",
+	"description":              "description",
+	"displayName":              "displayName",
+	"givenName":                "givenName",
+	"sn":                       "surname",
+	"userPrincipalName":        "userPrincipalName",
+	"managedBy":                "managedBy",
+	"accountExpires":           "accountExpirationDate",
+	"dNSHostName":              "dnsHostName",
+	"msDS-AllowedToDelegateTo": "allowedToDelegateTo",
+}
+
+// multiValuedClearField reports whether field (a clearToField value) is
+// multi-valued, so -Clear empties it to [] rather than "". accountExpires's
+// nil handling is checked separately by its caller.
+func multiValuedClearField(field string) bool {
+	return field == "allowedToDelegateTo"
 }
 
 func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
@@ -341,14 +392,16 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 			o.Data["category"] = strings.ToLower(asString(v))
 		case "KerberosEncryptionType":
 			o.Data["kerberosEncryptionType"] = toStringSlice(v)
-		case "PrincipalsAllowedToRetrieveManagedPassword", "PrincipalsAllowed":
+		case "PrincipalsAllowedToRetrieveManagedPassword", "PrincipalsAllowed",
+			"PrincipalsAllowedToDelegateToAccount":
 			// The fake does not model DN→GUID resolution the real converter
 			// does: whatever identity form the caller gave is stored verbatim.
 			o.Data["principalsAllowed"] = toStringSlice(v)
 		case "ServicePrincipalNames":
-			// New-ADServiceAccount takes a plain list; Set-ADServiceAccount
-			// takes the {Add,Remove,Replace,Clear} hashtable form. Both are
-			// full-replace here, matching the "Global constraints" contract.
+			// New-ADServiceAccount/New-ADComputer take a plain list;
+			// Set-ADServiceAccount/Set-ADComputer take the
+			// {Add,Remove,Replace,Clear} hashtable form. Both are full-replace
+			// here, matching the "Global constraints" contract.
 			if m, ok := v.(map[string]any); ok {
 				if r, ok := m["Replace"]; ok {
 					o.Data["servicePrincipalNames"] = toStringSlice(r)
@@ -360,13 +413,24 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 				continue
 			}
 			o.Data["servicePrincipalNames"] = toStringSlice(v)
+		case "OtherAttributes":
+			// New-ADComputer's only way to set msDS-AllowedToDelegateTo on
+			// create: unlike ServicePrincipalNames, it has no friendly
+			// parameter of its own (lab-confirmed: -AllowedToDelegateTo is not
+			// a recognized parameter of either New-ADComputer or
+			// Set-ADComputer), so it rides here under its raw LDAP name.
+			if oa, ok := v.(map[string]any); ok {
+				if atdt, ok := oa["msDS-AllowedToDelegateTo"]; ok {
+					o.Data["allowedToDelegateTo"] = toStringSlice(atdt)
+				}
+			}
 		case "SamAccountName":
 			sam := asString(v)
-			// AD appends "$" to a gMSA's sAMAccountName on any write, not just
-			// create; the update path normalizes it the same way handleCreate
-			// already does, so a read-back after a sam change agrees with
-			// real-DC behavior.
-			if o.Class == classGMSA && sam != "" && !strings.HasSuffix(sam, "$") {
+			// AD appends "$" to a gMSA's or a computer's sAMAccountName on any
+			// write, not just create; the update path normalizes it the same
+			// way handleCreate already does, so a read-back after a sam
+			// change agrees with real-DC behavior.
+			if (o.Class == classGMSA || o.Class == classComputer) && sam != "" && !strings.HasSuffix(sam, "$") {
 				sam += "$"
 			}
 			o.Data["samAccountName"] = sam
@@ -382,11 +446,24 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 			if !ok {
 				continue
 			}
-			if field == "accountExpirationDate" {
+			switch {
+			case field == "accountExpirationDate":
 				o.Data[field] = nil
-				continue
+			case multiValuedClearField(field):
+				o.Data[field] = []string{}
+			default:
+				o.Data[field] = ""
 			}
-			o.Data[field] = ""
+		}
+	}
+	// The generic -Replace hashtable (built by adscript.AttrOps for an
+	// attribute with no friendly cmdlet parameter, e.g.
+	// msDS-AllowedToDelegateTo) is looked up by raw LDAP name the same way
+	// -Clear is above, rather than by cmdlet parameter name like the
+	// switch's other cases.
+	if replace, ok := s["Replace"].(map[string]any); ok {
+		if atdt, ok := replace["msDS-AllowedToDelegateTo"]; ok {
+			o.Data["allowedToDelegateTo"] = toStringSlice(atdt)
 		}
 	}
 }
