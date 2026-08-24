@@ -352,3 +352,157 @@ func TestDirectoryDACLGrantIdempotentAndRevokeSpecific(t *testing.T) {
 		t.Fatalf("surviving ACE = %v, want the untouched trustee S-1-5-2 (revoke must be specific, not clear the DACL)", surviving)
 	}
 }
+
+// TestFakeGMSACreateRead pins the fake's ADServiceAccount create defaults: the
+// sAMAccountName gains the trailing "$" AD itself appends, and
+// managedPasswordIntervalInDays defaults to 30 when the caller does not name
+// one.
+func TestFakeGMSACreateRead(t *testing.T) {
+	d := fake.NewDirectory()
+	create := d.Handle(fake.Call{Op: "gmsa_create", Payload: map[string]any{
+		"create": map[string]any{
+			"Name": "svc-web", "SamAccountName": "svc-web",
+			"Path": "OU=x,DC=corp,DC=local", "DNSHostName": "svc-web.corp.local",
+		},
+		"project": []string{"*"},
+	}})
+	if create.Err != nil {
+		t.Fatalf("create: %+v", create.Err)
+	}
+	out, _ := create.Data.(map[string]any)
+	guid, _ := out["objectGUID"].(string)
+	if guid == "" {
+		t.Fatal("no objectGUID")
+	}
+	if out["samAccountName"] != "svc-web$" {
+		t.Fatalf("sam = %v, want svc-web$", out["samAccountName"])
+	}
+	if out["managedPasswordIntervalInDays"] != 30 {
+		t.Fatalf("interval = %v, want 30", out["managedPasswordIntervalInDays"])
+	}
+
+	read := d.Handle(fake.Call{Op: "gmsa_read", Payload: map[string]any{"identity": guid, "project": []string{"*"}}})
+	if read.Err != nil {
+		t.Fatalf("read: %+v", read.Err)
+	}
+	got, _ := read.Data.(map[string]any)
+	if got["samAccountName"] != "svc-web$" {
+		t.Fatalf("sam = %v, want svc-web$", got["samAccountName"])
+	}
+	if got["managedPasswordIntervalInDays"] != 30 {
+		t.Fatalf("interval = %v, want 30", got["managedPasswordIntervalInDays"])
+	}
+	if got["dnsHostName"] != "svc-web.corp.local" {
+		t.Fatalf("dnsHostName = %v, want svc-web.corp.local", got["dnsHostName"])
+	}
+	if got["enabled"] != true {
+		t.Fatalf("enabled = %v, want true", got["enabled"])
+	}
+	kerb, _ := got["kerberosEncryptionType"].([]string)
+	if len(kerb) != 3 {
+		t.Fatalf("kerberosEncryptionType = %v, want [RC4 AES128 AES256]", got["kerberosEncryptionType"])
+	}
+	// Every key Convert-AdServiceAccount emits must round-trip through the fake,
+	// so one Go decoder handles both backends.
+	for _, k := range []string{
+		"objectGUID", "distinguishedName", "name", "samAccountName", "sid",
+		"dnsHostName", "description", "displayName", "enabled", "trustedForDelegation",
+		"principalsAllowed", "servicePrincipalNames", "kerberosEncryptionType",
+		"managedPasswordIntervalInDays", "accountExpirationDate",
+	} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("read is missing key %q", k)
+		}
+	}
+}
+
+// TestFakeGMSAUpdateFullReplace pins the update contract the real
+// Set-ADServiceAccount cmdlet family gives: PrincipalsAllowed, SPNs and the
+// Kerberos encryption types are full-replace, and an empty string on a
+// string attribute clears it (mirroring -Clear).
+func TestFakeGMSAUpdateFullReplace(t *testing.T) {
+	d := fake.NewDirectory()
+	create := d.Handle(fake.Call{Op: "gmsa_create", Payload: map[string]any{
+		"create": map[string]any{
+			"Name": "svc", "SamAccountName": "svc",
+			"Path": "OU=x,DC=corp,DC=local", "DNSHostName": "svc.corp.local",
+			"Description": "orig",
+		},
+	}})
+	if create.Err != nil {
+		t.Fatalf("create: %+v", create.Err)
+	}
+	guid := create.Data.(map[string]any)["objectGUID"].(string)
+
+	upd := d.Handle(fake.Call{Op: "gmsa_update", Payload: map[string]any{
+		"identity": guid,
+		"set": map[string]any{
+			"Identity":               guid,
+			"Clear":                  []any{"description"},
+			"ServicePrincipalNames":  map[string]any{"Replace": []any{"HTTP/svc.corp.local"}},
+			"KerberosEncryptionType": []any{"AES256"},
+			"PrincipalsAllowedToRetrieveManagedPassword": []any{"11111111-1111-1111-1111-111111111111"},
+			"TrustedForDelegation":                       true,
+		},
+	}})
+	if upd.Err != nil {
+		t.Fatalf("update: %+v", upd.Err)
+	}
+	got := upd.Data.(map[string]any)
+	if got["description"] != "" {
+		t.Fatalf("description = %v, want cleared", got["description"])
+	}
+	spn, _ := got["servicePrincipalNames"].([]string)
+	if len(spn) != 1 || spn[0] != "HTTP/svc.corp.local" {
+		t.Fatalf("servicePrincipalNames = %v, want [HTTP/svc.corp.local]", got["servicePrincipalNames"])
+	}
+	kerb, _ := got["kerberosEncryptionType"].([]string)
+	if len(kerb) != 1 || kerb[0] != "AES256" {
+		t.Fatalf("kerberosEncryptionType = %v, want [AES256]", got["kerberosEncryptionType"])
+	}
+	principals, _ := got["principalsAllowed"].([]string)
+	if len(principals) != 1 || principals[0] != "11111111-1111-1111-1111-111111111111" {
+		t.Fatalf("principalsAllowed = %v, want the one GUID given", got["principalsAllowed"])
+	}
+	if got["trustedForDelegation"] != true {
+		t.Fatalf("trustedForDelegation = %v, want true", got["trustedForDelegation"])
+	}
+	// managedPasswordIntervalInDays is create-only: absent from the update
+	// payload must not crash and must not change the stored value.
+	if got["managedPasswordIntervalInDays"] != 30 {
+		t.Fatalf("managedPasswordIntervalInDays = %v, want unchanged 30", got["managedPasswordIntervalInDays"])
+	}
+}
+
+// TestFakeGMSADeleteAndSearch exercises gmsa_delete (tombstone + not-found on
+// re-read) and gmsa_search (class-scoped, returns the Convert-shaped JSON).
+func TestFakeGMSADeleteAndSearch(t *testing.T) {
+	d := fake.NewDirectory()
+	create := d.Handle(fake.Call{Op: "gmsa_create", Payload: map[string]any{
+		"create": map[string]any{
+			"Name": "svc2", "SamAccountName": "svc2",
+			"Path": "OU=x,DC=corp,DC=local", "DNSHostName": "svc2.corp.local",
+		},
+	}})
+	guid := create.Data.(map[string]any)["objectGUID"].(string)
+
+	search := d.Handle(fake.Call{Op: "gmsa_search", Payload: map[string]any{
+		"filter": "(objectClass=*)", "searchBase": "DC=corp,DC=local", "scope": "Subtree", "sizeLimit": float64(1000),
+	}})
+	if search.Err != nil {
+		t.Fatalf("search: %+v", search.Err)
+	}
+	results, _ := search.Data.(map[string]any)["results"].([]any)
+	if len(results) != 1 {
+		t.Fatalf("search results = %d, want 1", len(results))
+	}
+
+	del := d.Handle(fake.Call{Op: "gmsa_delete", Payload: map[string]any{"identity": guid}})
+	if del.Err != nil {
+		t.Fatalf("delete: %+v", del.Err)
+	}
+	read := d.Handle(fake.Call{Op: "gmsa_read", Payload: map[string]any{"identity": guid}})
+	if read.Err == nil {
+		t.Fatal("read after delete: want not-found, got success")
+	}
+}

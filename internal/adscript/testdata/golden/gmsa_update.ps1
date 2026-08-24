@@ -120,9 +120,10 @@ function Test-AdMember($group, $memberId) {
 
 try {
     $data = & {
-        $r = @(Get-ADUser -LDAPFilter $p.filter -SearchBase $p.searchBase `
-                 -SearchScope $p.scope -ResultSetSize $p.sizeLimit -Properties $p.project @common)
-        [ordered]@{ results = @($r | ForEach-Object { Convert-AdUser $_ }) }
+        if ($p.set)    { $s = $p.set;    $null = Set-ADServiceAccount @s @common }
+        if ($p.rename) { $r = $p.rename; $null = Rename-ADObject @r @common }
+        if ($p.move)   { $m = $p.move;   $null = Move-ADObject @m @common }
+        Convert-AdServiceAccount (Get-ADServiceAccount -Identity $p.identity -Properties $p.project @common)
     }
     $out = @{ ok = $true; data = $data }
 } catch {

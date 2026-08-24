@@ -138,7 +138,9 @@ func (d *Directory) Handle(c Call) Response {
 		return d.handleCreate(c, "group")
 	case "user_create":
 		return d.handleCreate(c, "user")
-	case "ou_read", "group_read", "user_read":
+	case "gmsa_create":
+		return d.handleCreate(c, classGMSA)
+	case "ou_read", "group_read", "user_read", "gmsa_read":
 		o := d.find(asString(c.Payload["identity"]))
 		if o == nil {
 			return notFound(asString(c.Payload["identity"]))
@@ -150,11 +152,13 @@ func (d *Directory) Handle(c Call) Response {
 		return d.handleSearch(c, "group")
 	case "user_search":
 		return d.handleSearch(c, "user")
-	case "ou_update", "group_update", "user_update":
+	case "gmsa_search":
+		return d.handleSearch(c, classGMSA)
+	case "ou_update", "group_update", "user_update", "gmsa_update":
 		return d.handleUpdate(c)
 	case "ou_delete":
 		return d.handleOUDelete(c)
-	case "group_delete", "user_delete":
+	case "group_delete", "user_delete", "gmsa_delete":
 		return d.handleDelete(c)
 	case "user_setpassword":
 		o := d.find(asString(c.Payload["identity"]))
@@ -187,6 +191,11 @@ func (d *Directory) Handle(c Call) Response {
 	}
 }
 
+// classGMSA is the class a group Managed Service Account is stored and
+// dispatched under, matching the real AD schema class name so a filter or a
+// read that names it literally still matches.
+const classGMSA = "msDS-GroupManagedServiceAccount"
+
 // rdnPrefix is the attribute an object of this class is named by (rdnAttId).
 func rdnPrefix(class string) string {
 	if class == "organizationalUnit" {
@@ -209,6 +218,15 @@ func (d *Directory) handleCreate(c Call, class string) Response {
 	name := asString(create["Name"])
 	container := asString(create["Path"])
 	dn := buildDN(class, name, container)
+
+	// AD itself appends "$" to a gMSA's sAMAccountName; mutating the splat
+	// before the uniqueness scan keeps that scan comparing like with like
+	// against what a prior create already stored.
+	if class == classGMSA {
+		if sam := asString(create["SamAccountName"]); sam != "" && !strings.HasSuffix(sam, "$") {
+			create["SamAccountName"] = sam + "$"
+		}
+	}
 
 	for _, o := range d.objects {
 		if strings.EqualFold(o.DN, dn) && !o.Deleted {
@@ -255,6 +273,19 @@ func (d *Directory) handleCreate(c Call, class string) Response {
 		obj.Data["canChangePassword"] = true
 		obj.Data["passwordExpires"] = true
 		obj.Data["accountExpirationDate"] = nil
+	case classGMSA:
+		obj.Data["samAccountName"] = ""
+		obj.Data["sid"] = "S-1-5-21-1-2-3-" + fmt.Sprint(1000+d.seq)
+		obj.Data["dnsHostName"] = ""
+		obj.Data["description"] = ""
+		obj.Data["displayName"] = ""
+		obj.Data["enabled"] = true
+		obj.Data["trustedForDelegation"] = false
+		obj.Data["principalsAllowed"] = []string{}
+		obj.Data["servicePrincipalNames"] = []string{}
+		obj.Data["kerberosEncryptionType"] = []string{"RC4", "AES128", "AES256"}
+		obj.Data["managedPasswordIntervalInDays"] = 30
+		obj.Data["accountExpirationDate"] = nil
 	}
 	d.applySplat(obj, create)
 	if pw := asString(c.Payload["password"]); pw != "" {
@@ -278,6 +309,9 @@ var paramToField = map[string]string{
 	"ChangePasswordAtLogon":           "changePasswordAtLogon",
 	"AccountExpirationDate":           "accountExpirationDate",
 	"ProtectedFromAccidentalDeletion": "protected",
+	"DNSHostName":                     "dnsHostName",
+	"TrustedForDelegation":            "trustedForDelegation",
+	"ManagedPasswordIntervalInDays":   "managedPasswordIntervalInDays",
 }
 
 // clearToField maps an LDAP name in -Clear to the model field it empties.
@@ -289,6 +323,7 @@ var clearToField = map[string]string{
 	"userPrincipalName": "userPrincipalName",
 	"managedBy":         "managedBy",
 	"accountExpires":    "accountExpirationDate",
+	"dNSHostName":       "dnsHostName",
 }
 
 func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
@@ -304,6 +339,37 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 			o.Data["scope"] = strings.ToLower(asString(v))
 		case "GroupCategory":
 			o.Data["category"] = strings.ToLower(asString(v))
+		case "KerberosEncryptionType":
+			o.Data["kerberosEncryptionType"] = toStringSlice(v)
+		case "PrincipalsAllowedToRetrieveManagedPassword", "PrincipalsAllowed":
+			// The fake does not model DN→GUID resolution the real converter
+			// does: whatever identity form the caller gave is stored verbatim.
+			o.Data["principalsAllowed"] = toStringSlice(v)
+		case "ServicePrincipalNames":
+			// New-ADServiceAccount takes a plain list; Set-ADServiceAccount
+			// takes the {Add,Remove,Replace,Clear} hashtable form. Both are
+			// full-replace here, matching the "Global constraints" contract.
+			if m, ok := v.(map[string]any); ok {
+				if r, ok := m["Replace"]; ok {
+					o.Data["servicePrincipalNames"] = toStringSlice(r)
+				} else if _, ok := m["Clear"]; ok {
+					o.Data["servicePrincipalNames"] = []string{}
+				} else if a, ok := m["Add"]; ok {
+					o.Data["servicePrincipalNames"] = toStringSlice(a)
+				}
+				continue
+			}
+			o.Data["servicePrincipalNames"] = toStringSlice(v)
+		case "SamAccountName":
+			sam := asString(v)
+			// AD appends "$" to a gMSA's sAMAccountName on any write, not just
+			// create; the update path normalizes it the same way handleCreate
+			// already does, so a read-back after a sam change agrees with
+			// real-DC behavior.
+			if o.Class == classGMSA && sam != "" && !strings.HasSuffix(sam, "$") {
+				sam += "$"
+			}
+			o.Data["samAccountName"] = sam
 		default:
 			if field, ok := paramToField[param]; ok {
 				o.Data[field] = v
