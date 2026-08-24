@@ -3,6 +3,7 @@ package adpwsh
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nemethhh/go-adpwsh/internal/addn"
@@ -188,6 +189,14 @@ func (s *ServiceAccountClient) Update(ctx context.Context, id Identity, spec GMS
 	applyStringField(&ops, set, "DNSHostName", "dNSHostName", spec.DNSHostName)
 	applyStringField(&ops, set, "Description", "description", spec.Description)
 	applyStringField(&ops, set, "DisplayName", "displayName", spec.DisplayName)
+	// AD appends "$" to a gMSA's sAMAccountName (see Create/the fake's
+	// handleCreate), so current.SamAccountName is already suffixed while
+	// spec.SamAccountName, the config value, never is. Comparing the two
+	// directly would be always-true and churn -SamAccountName on every
+	// update; strip the suffix current carries before diffing.
+	if spec.SamAccountName != strings.TrimSuffix(current.SamAccountName, "$") {
+		set["SamAccountName"] = spec.SamAccountName
+	}
 	if spec.Enabled != nil && *spec.Enabled != current.Enabled {
 		set["Enabled"] = *spec.Enabled
 	}

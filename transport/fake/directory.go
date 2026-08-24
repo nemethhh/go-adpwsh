@@ -360,6 +360,16 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 				continue
 			}
 			o.Data["servicePrincipalNames"] = toStringSlice(v)
+		case "SamAccountName":
+			sam := asString(v)
+			// AD appends "$" to a gMSA's sAMAccountName on any write, not just
+			// create; the update path normalizes it the same way handleCreate
+			// already does, so a read-back after a sam change agrees with
+			// real-DC behavior.
+			if o.Class == classGMSA && sam != "" && !strings.HasSuffix(sam, "$") {
+				sam += "$"
+			}
+			o.Data["samAccountName"] = sam
 		default:
 			if field, ok := paramToField[param]; ok {
 				o.Data[field] = v

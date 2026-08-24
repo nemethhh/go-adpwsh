@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
 	"github.com/nemethhh/go-adpwsh/transport/fake"
@@ -277,12 +278,18 @@ func TestServiceAccountUpdateDelete(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Clear the description via an empty string; full-replace the SPNs.
+	// Clear the description via an empty string; full-replace the SPNs and
+	// the Kerberos encryption types; flip Enabled and TrustedForDelegation;
+	// set an AccountExpiration.
 	spns := []string{"HTTP/svc.corp.local"}
+	kerb := []string{"AES256"}
+	expires := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
 	upd, err := client.ServiceAccount.Update(ctx, adpwsh.ByGUID(g.GUID), adpwsh.GMSASpec{
 		Name: "svc", SamAccountName: "svc", Container: "OU=x,DC=corp,DC=local",
 		DNSHostName: adpwsh.String("svc.corp.local"), Description: adpwsh.String(""),
-		ServicePrincipalNames: &spns,
+		ServicePrincipalNames: &spns, KerberosEncryptionType: &kerb,
+		Enabled: adpwsh.Bool(false), TrustedForDelegation: adpwsh.Bool(true),
+		AccountExpiration: adpwsh.SetTime(expires),
 	})
 	if err != nil {
 		t.Fatalf("Update (clear description, replace SPNs): %v", err)
@@ -292,6 +299,15 @@ func TestServiceAccountUpdateDelete(t *testing.T) {
 	}
 	if len(upd.ServicePrincipalNames) != 1 || upd.ServicePrincipalNames[0] != "HTTP/svc.corp.local" {
 		t.Fatalf("ServicePrincipalNames = %v, want a single full replace", upd.ServicePrincipalNames)
+	}
+	if len(upd.KerberosEncryptionType) != 1 || upd.KerberosEncryptionType[0] != "AES256" {
+		t.Fatalf("KerberosEncryptionType = %v, want a single full replace", upd.KerberosEncryptionType)
+	}
+	if upd.Enabled != false || upd.TrustedForDelegation != true {
+		t.Fatalf("Enabled/TrustedForDelegation = %v/%v, want false/true", upd.Enabled, upd.TrustedForDelegation)
+	}
+	if upd.AccountExpiration == nil || !upd.AccountExpiration.Equal(expires) {
+		t.Fatalf("AccountExpiration = %v, want %v", upd.AccountExpiration, expires)
 	}
 
 	// Full-replace PrincipalsAllowed.
@@ -329,6 +345,57 @@ func TestServiceAccountUpdateDelete(t *testing.T) {
 	}
 	if _, err := client.ServiceAccount.Get(ctx, adpwsh.ByGUID(g.GUID)); !errors.Is(err, adpwsh.ErrNotFound) {
 		t.Fatalf("Get after Delete = %v, want KindNotFound", err)
+	}
+}
+
+// TestServiceAccountUpdateSamAccountName pins a Critical fix: Update must
+// diff spec.SamAccountName against current and send -SamAccountName when it
+// changed — mirroring User.Update/Group.Update, which already do this.
+// AD (and the fake, mirroring handleCreate) appends "$" to a gMSA's
+// sAMAccountName on every write, while the spec/config value never carries
+// that suffix, so the diff has to strip it from current before comparing:
+// comparing the raw values directly would be always-true and churn
+// -SamAccountName on every single update, even one that never touches the
+// name — which is exactly what the second Update call below (repeating the
+// same, already-applied sam) guards against.
+func TestServiceAccountUpdateSamAccountName(t *testing.T) {
+	dir := fake.NewDirectory()
+	client := mustClient(t, adpwsh.Config{Transport: dir.Transport()})
+	ctx := context.Background()
+
+	g, err := client.ServiceAccount.Create(ctx, adpwsh.GMSASpec{
+		Name: "svc", SamAccountName: "svc", Container: "OU=x,DC=corp,DC=local",
+		DNSHostName: adpwsh.String("svc.corp.local"),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if g.SamAccountName != "svc$" {
+		t.Fatalf("SamAccountName after create = %q, want svc$", g.SamAccountName)
+	}
+
+	upd, err := client.ServiceAccount.Update(ctx, adpwsh.ByGUID(g.GUID), adpwsh.GMSASpec{
+		Name: "svc", SamAccountName: "svc2", Container: "OU=x,DC=corp,DC=local",
+		DNSHostName: adpwsh.String("svc.corp.local"),
+	})
+	if err != nil {
+		t.Fatalf("Update (change sam svc -> svc2): %v", err)
+	}
+	if upd.SamAccountName != "svc2$" {
+		t.Fatalf("SamAccountName after sam change = %q, want svc2$", upd.SamAccountName)
+	}
+
+	// Repeating the same (already-applied, un-suffixed) sam must not error
+	// and must not spuriously churn -SamAccountName.
+	upd, err = client.ServiceAccount.Update(ctx, adpwsh.ByGUID(g.GUID), adpwsh.GMSASpec{
+		Name: "svc", SamAccountName: "svc2", Container: "OU=x,DC=corp,DC=local",
+		DNSHostName: adpwsh.String("svc.corp.local"),
+	})
+	if err != nil {
+		t.Fatalf("Update (unchanged sam): %v", err)
+	}
+	if upd.SamAccountName != "svc2$" {
+		t.Fatalf("SamAccountName after unchanged-sam update = %q, want svc2$ (no churn)", upd.SamAccountName)
 	}
 }
 
