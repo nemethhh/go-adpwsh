@@ -359,14 +359,22 @@ var paramToField = map[string]string{
 
 // clearToField maps an LDAP name in -Clear to the model field it empties.
 var clearToField = map[string]string{
-	"description":       "description",
-	"displayName":       "displayName",
-	"givenName":         "givenName",
-	"sn":                "surname",
-	"userPrincipalName": "userPrincipalName",
-	"managedBy":         "managedBy",
-	"accountExpires":    "accountExpirationDate",
-	"dNSHostName":       "dnsHostName",
+	"description":              "description",
+	"displayName":              "displayName",
+	"givenName":                "givenName",
+	"sn":                       "surname",
+	"userPrincipalName":        "userPrincipalName",
+	"managedBy":                "managedBy",
+	"accountExpires":           "accountExpirationDate",
+	"dNSHostName":              "dnsHostName",
+	"msDS-AllowedToDelegateTo": "allowedToDelegateTo",
+}
+
+// multiValuedClearField reports whether field (a clearToField value) is
+// multi-valued, so -Clear empties it to [] rather than "". accountExpires's
+// nil handling is checked separately by its caller.
+func multiValuedClearField(field string) bool {
+	return field == "allowedToDelegateTo"
 }
 
 func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
@@ -405,21 +413,17 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 				continue
 			}
 			o.Data["servicePrincipalNames"] = toStringSlice(v)
-		case "AllowedToDelegateTo":
-			// msDS-AllowedToDelegateTo mirrors ServicePrincipalNames: a plain
-			// list on create (New-ADComputer), the {Add,Remove,Replace,Clear}
-			// hashtable form on update (Set-ADComputer). Both are full-replace.
-			if m, ok := v.(map[string]any); ok {
-				if r, ok := m["Replace"]; ok {
-					o.Data["allowedToDelegateTo"] = toStringSlice(r)
-				} else if _, ok := m["Clear"]; ok {
-					o.Data["allowedToDelegateTo"] = []string{}
-				} else if a, ok := m["Add"]; ok {
-					o.Data["allowedToDelegateTo"] = toStringSlice(a)
+		case "OtherAttributes":
+			// New-ADComputer's only way to set msDS-AllowedToDelegateTo on
+			// create: unlike ServicePrincipalNames, it has no friendly
+			// parameter of its own (lab-confirmed: -AllowedToDelegateTo is not
+			// a recognized parameter of either New-ADComputer or
+			// Set-ADComputer), so it rides here under its raw LDAP name.
+			if oa, ok := v.(map[string]any); ok {
+				if atdt, ok := oa["msDS-AllowedToDelegateTo"]; ok {
+					o.Data["allowedToDelegateTo"] = toStringSlice(atdt)
 				}
-				continue
 			}
-			o.Data["allowedToDelegateTo"] = toStringSlice(v)
 		case "SamAccountName":
 			sam := asString(v)
 			// AD appends "$" to a gMSA's or a computer's sAMAccountName on any
@@ -442,11 +446,24 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 			if !ok {
 				continue
 			}
-			if field == "accountExpirationDate" {
+			switch {
+			case field == "accountExpirationDate":
 				o.Data[field] = nil
-				continue
+			case multiValuedClearField(field):
+				o.Data[field] = []string{}
+			default:
+				o.Data[field] = ""
 			}
-			o.Data[field] = ""
+		}
+	}
+	// The generic -Replace hashtable (built by adscript.AttrOps for an
+	// attribute with no friendly cmdlet parameter, e.g.
+	// msDS-AllowedToDelegateTo) is looked up by raw LDAP name the same way
+	// -Clear is above, rather than by cmdlet parameter name like the
+	// switch's other cases.
+	if replace, ok := s["Replace"].(map[string]any); ok {
+		if atdt, ok := replace["msDS-AllowedToDelegateTo"]; ok {
+			o.Data["allowedToDelegateTo"] = toStringSlice(atdt)
 		}
 	}
 }

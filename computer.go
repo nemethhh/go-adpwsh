@@ -122,15 +122,23 @@ func (cc *ComputerClient) Create(ctx context.Context, spec ComputerSpec) (*Compu
 	if spec.TrustedForDelegation != nil {
 		create["TrustedForDelegation"] = *spec.TrustedForDelegation
 	}
-	// ServicePrincipalNames and AllowedToDelegateTo are plain lists on create;
-	// the {Add,Remove,Replace,Clear} hashtable form Update uses only applies to
+	// ServicePrincipalNames is a plain list on create; the
+	// {Add,Remove,Replace,Clear} hashtable form Update uses only applies to
 	// Set-ADComputer, mirroring the ServicePrincipalNames precedent in
 	// ServiceAccountClient.Create.
 	if spec.ServicePrincipalNames != nil {
 		create["ServicePrincipalNames"] = *spec.ServicePrincipalNames
 	}
-	if spec.AllowedToDelegateTo != nil {
-		create["AllowedToDelegateTo"] = *spec.AllowedToDelegateTo
+	// msDS-AllowedToDelegateTo (classic constrained delegation) has no
+	// friendly New-ADComputer parameter, unlike ServicePrincipalNames: a
+	// lab run against a real DC confirmed New-ADComputer rejects
+	// -AllowedToDelegateTo outright ("A parameter cannot be found that
+	// matches parameter name 'AllowedToDelegateTo'"). A non-empty value
+	// rides in -OtherAttributes under its raw LDAP name instead; nil or
+	// empty is simply omitted, since there is nothing to clear on a brand
+	// new object.
+	if spec.AllowedToDelegateTo != nil && len(*spec.AllowedToDelegateTo) > 0 {
+		create["OtherAttributes"] = map[string]any{"msDS-AllowedToDelegateTo": *spec.AllowedToDelegateTo}
 	}
 	if spec.PrincipalsAllowed != nil {
 		create["PrincipalsAllowedToDelegateToAccount"] = identityArgs(spec.PrincipalsAllowed)
@@ -245,10 +253,20 @@ func (cc *ComputerClient) Update(ctx context.Context, id Identity, spec Computer
 		// accepts, fails on a real DC.
 		set["ServicePrincipalNames"] = map[string]any{"Replace": *spec.ServicePrincipalNames}
 	}
+	// msDS-AllowedToDelegateTo has no friendly Set-ADComputer parameter either
+	// (lab-verified: -AllowedToDelegateTo does not exist there any more than
+	// on New-ADComputer). It is written through the raw LDAP name via the
+	// same generic -Replace/-Clear mechanism the tri-state string fields
+	// above already feed into ops, rather than a bespoke set["Replace"]/
+	// set["Clear"] key: folding it into ops means a simultaneous string-field
+	// -Clear in the same call (e.g. Description) merges into one -Clear list
+	// instead of one silently clobbering the other.
 	if spec.AllowedToDelegateTo != nil {
-		// msDS-AllowedToDelegateTo (classic constrained delegation) is written
-		// the same {Replace: […]} way as ServicePrincipalNames.
-		set["AllowedToDelegateTo"] = map[string]any{"Replace": *spec.AllowedToDelegateTo}
+		if len(*spec.AllowedToDelegateTo) == 0 {
+			ops.ClearName("msDS-AllowedToDelegateTo")
+		} else {
+			ops.ReplaceValue("msDS-AllowedToDelegateTo", *spec.AllowedToDelegateTo)
+		}
 	}
 	if spec.PrincipalsAllowed != nil {
 		set["PrincipalsAllowedToDelegateToAccount"] = identityArgs(spec.PrincipalsAllowed)

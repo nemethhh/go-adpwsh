@@ -70,11 +70,13 @@ func TestComputerClientCreateGet(t *testing.T) {
 
 // TestComputerClientCreateSendsThePinnedSplatKeys locks the create payload to
 // the exact keys the fake and the real New-ADComputer cmdlet both expect:
-// PrincipalsAllowedToDelegateToAccount (RBCD) through identityArgs, SPNs and
-// AllowedToDelegateTo as plain lists on create (the {Replace:...} hashtable
-// form is Update-only, mirroring gMSA's ServicePrincipalNames precedent), and
-// OperatingSystem* never appearing since they are read-only and not on
-// ComputerSpec.
+// PrincipalsAllowedToDelegateToAccount (RBCD) through identityArgs, SPNs as a
+// plain list on create (the {Replace:...} hashtable form is Update-only,
+// mirroring gMSA's ServicePrincipalNames precedent), msDS-AllowedToDelegateTo
+// riding under -OtherAttributes rather than a bare -AllowedToDelegateTo
+// parameter (lab-verified: New-ADComputer has no such parameter and rejects
+// it), and OperatingSystem* never appearing since they are read-only and not
+// on ComputerSpec.
 func TestComputerClientCreateSendsThePinnedSplatKeys(t *testing.T) {
 	var create map[string]any
 	tr := fake.New(func(c fake.Call) fake.Response {
@@ -126,9 +128,14 @@ func TestComputerClientCreateSendsThePinnedSplatKeys(t *testing.T) {
 	if len(spnGot) != 1 || spnGot[0] != "HOST/web01" {
 		t.Errorf("ServicePrincipalNames = %v, want a plain list", create["ServicePrincipalNames"])
 	}
-	atdtGot := toStrs(create["AllowedToDelegateTo"])
+	if _, present := create["AllowedToDelegateTo"]; present {
+		t.Errorf("create splat must never carry a bare AllowedToDelegateTo key: "+
+			"New-ADComputer has no such parameter (lab-verified) = %v", create)
+	}
+	otherAttrs, _ := create["OtherAttributes"].(map[string]any)
+	atdtGot := toStrs(otherAttrs["msDS-AllowedToDelegateTo"])
 	if len(atdtGot) != 1 || atdtGot[0] != "HTTP/db01.corp.local" {
-		t.Errorf("AllowedToDelegateTo = %v, want a plain list", create["AllowedToDelegateTo"])
+		t.Errorf("OtherAttributes[msDS-AllowedToDelegateTo] = %v, want a plain list under -OtherAttributes", otherAttrs)
 	}
 	kerbGot := toStrs(create["KerberosEncryptionType"])
 	if len(kerbGot) != 1 || kerbGot[0] != "AES256" {
@@ -144,10 +151,11 @@ func TestComputerClientCreateSendsThePinnedSplatKeys(t *testing.T) {
 // TestComputerClientUpdateDelete drives a full update -> delete round trip
 // against fake.Directory, mirroring TestServiceAccountUpdateDelete. It
 // exercises clear-via-empty-string (Description), a full SPN replace, a full
-// AllowedToDelegateTo replace, a full RBCD principals replace, flipping
-// Enabled/TrustedForDelegation, and finally a combined rename+move (GUID must
-// survive, DN must reflect the new CN and container) followed by Delete and a
-// not-found Get.
+// AllowedToDelegateTo replace (msDS-AllowedToDelegateTo via the generic
+// -Replace mechanism, not a bare cmdlet parameter), a full KerberosEncryptionType
+// replace, a full RBCD principals replace, flipping Enabled/TrustedForDelegation,
+// and finally a combined rename+move (GUID must survive, DN must reflect the
+// new CN and container) followed by Delete and a not-found Get.
 func TestComputerClientUpdateDelete(t *testing.T) {
 	dir := fake.NewDirectory()
 	client := mustClient(t, adpwsh.Config{Transport: dir.Transport()})
@@ -163,16 +171,17 @@ func TestComputerClientUpdateDelete(t *testing.T) {
 
 	spns := []string{"HOST/web01.corp.local"}
 	atdt := []string{"HTTP/db01.corp.local"}
+	kerb := []string{"AES256"}
 	principal := adpwsh.ByGUID("22222222-2222-2222-2222-222222222222")
 	upd, err := client.Computer.Update(ctx, adpwsh.ByGUID(c.GUID), adpwsh.ComputerSpec{
 		Name: "WEB01", SamAccountName: "WEB01", Container: "OU=x,DC=corp,DC=local",
 		DNSHostName: adpwsh.String("web01.corp.local"), Description: adpwsh.String(""),
-		ServicePrincipalNames: &spns, AllowedToDelegateTo: &atdt,
+		ServicePrincipalNames: &spns, AllowedToDelegateTo: &atdt, KerberosEncryptionType: &kerb,
 		PrincipalsAllowed: []adpwsh.Identity{principal},
 		Enabled:           adpwsh.Bool(false), TrustedForDelegation: adpwsh.Bool(true),
 	})
 	if err != nil {
-		t.Fatalf("Update (clear description, replace SPNs/ATDT/principals): %v", err)
+		t.Fatalf("Update (clear description, replace SPNs/ATDT/Kerberos/principals): %v", err)
 	}
 	if upd.Description != "" {
 		t.Fatalf("description not cleared: %q", upd.Description)
@@ -182,6 +191,9 @@ func TestComputerClientUpdateDelete(t *testing.T) {
 	}
 	if len(upd.AllowedToDelegateTo) != 1 || upd.AllowedToDelegateTo[0] != "HTTP/db01.corp.local" {
 		t.Fatalf("AllowedToDelegateTo = %v, want a single full replace", upd.AllowedToDelegateTo)
+	}
+	if len(upd.KerberosEncryptionType) != 1 || upd.KerberosEncryptionType[0] != "AES256" {
+		t.Fatalf("KerberosEncryptionType = %v, want a single full replace", upd.KerberosEncryptionType)
 	}
 	if len(upd.PrincipalsAllowed) != 1 || upd.PrincipalsAllowed[0] != "22222222-2222-2222-2222-222222222222" {
 		t.Fatalf("PrincipalsAllowed = %v, want the one RBCD principal", upd.PrincipalsAllowed)
