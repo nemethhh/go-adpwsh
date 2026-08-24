@@ -3,12 +3,19 @@ package adpwsh
 import "time"
 
 // computerProject is the explicit -Properties list requested on every read.
-// Get-ADComputer returns almost nothing by default, and never "*".
+// Get-ADComputer returns almost nothing by default, and never "*". The SPN
+// and Kerberos encryption entries request the friendly, decoded property
+// names (ServicePrincipalNames, KerberosEncryptionType) — the same ones
+// gmsaProject requests — not the raw LDAP attribute names
+// (ServicePrincipalName singular; msDS-SupportedEncryptionTypes, an
+// undecoded bitmask). Requesting the raw names leaves the friendly
+// properties Convert-AdComputer reads unpopulated, or populated with a raw
+// integer instead of a decoded flag list.
 var computerProject = []string{
 	"ObjectGUID", "DistinguishedName", "Name", "SamAccountName", "SID", "Enabled",
 	"DNSHostName", "Description", "DisplayName", "Location", "ManagedBy",
-	"TrustedForDelegation", "ServicePrincipalName", "msDS-AllowedToDelegateTo",
-	"PrincipalsAllowedToDelegateToAccount", "msDS-SupportedEncryptionTypes",
+	"TrustedForDelegation", "ServicePrincipalNames", "msDS-AllowedToDelegateTo",
+	"PrincipalsAllowedToDelegateToAccount", "KerberosEncryptionType",
 	"AccountExpirationDate", "OperatingSystem", "OperatingSystemVersion",
 	"OperatingSystemServicePack",
 }

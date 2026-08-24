@@ -107,7 +107,7 @@ function Convert-AdComputer($c) {
         if ($dn) { $princ += (Get-ADObject -Identity $dn @common).ObjectGUID.ToString() }
     }
     $ket = @()
-    foreach ($k in @($c.'msDS-SupportedEncryptionTypes')) { $ket += (Convert-KerberosEncType $k) }
+    foreach ($k in @($c.KerberosEncryptionType)) { $ket += (Convert-KerberosEncType $k) }
     return [ordered]@{
         ObjectGUID             = $c.ObjectGUID.ToString()
         DistinguishedName      = $c.DistinguishedName
@@ -121,11 +121,11 @@ function Convert-AdComputer($c) {
         Location               = $c.Location
         ManagedBy              = $c.ManagedBy
         TrustedForDelegation   = [bool]$c.TrustedForDelegation
-        ServicePrincipalNames  = @($c.ServicePrincipalName)
+        ServicePrincipalNames  = @($c.ServicePrincipalNames)
         AllowedToDelegateTo    = @($c.'msDS-AllowedToDelegateTo')
         PrincipalsAllowed      = @($princ)
         KerberosEncryptionType = @($ket)
-        AccountExpirationDate  = if ($c.AccountExpirationDate) { $c.AccountExpirationDate.ToString('o') } else { '' }
+        AccountExpirationDate  = (ConvertTo-AdIsoTime $c.AccountExpirationDate)
         OperatingSystem            = $c.OperatingSystem
         OperatingSystemVersion     = $c.OperatingSystemVersion
         OperatingSystemServicePack = $c.OperatingSystemServicePack
