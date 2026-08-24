@@ -355,7 +355,6 @@ var paramToField = map[string]string{
 	"TrustedForDelegation":            "trustedForDelegation",
 	"ManagedPasswordIntervalInDays":   "managedPasswordIntervalInDays",
 	"Location":                        "location",
-	"AllowedToDelegateTo":             "allowedToDelegateTo",
 }
 
 // clearToField maps an LDAP name in -Clear to the model field it empties.
@@ -391,9 +390,10 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 			// does: whatever identity form the caller gave is stored verbatim.
 			o.Data["principalsAllowed"] = toStringSlice(v)
 		case "ServicePrincipalNames":
-			// New-ADServiceAccount takes a plain list; Set-ADServiceAccount
-			// takes the {Add,Remove,Replace,Clear} hashtable form. Both are
-			// full-replace here, matching the "Global constraints" contract.
+			// New-ADServiceAccount/New-ADComputer take a plain list;
+			// Set-ADServiceAccount/Set-ADComputer take the
+			// {Add,Remove,Replace,Clear} hashtable form. Both are full-replace
+			// here, matching the "Global constraints" contract.
 			if m, ok := v.(map[string]any); ok {
 				if r, ok := m["Replace"]; ok {
 					o.Data["servicePrincipalNames"] = toStringSlice(r)
@@ -405,6 +405,21 @@ func (d *Directory) applySplat(o *DirectoryObject, s map[string]any) {
 				continue
 			}
 			o.Data["servicePrincipalNames"] = toStringSlice(v)
+		case "AllowedToDelegateTo":
+			// msDS-AllowedToDelegateTo mirrors ServicePrincipalNames: a plain
+			// list on create (New-ADComputer), the {Add,Remove,Replace,Clear}
+			// hashtable form on update (Set-ADComputer). Both are full-replace.
+			if m, ok := v.(map[string]any); ok {
+				if r, ok := m["Replace"]; ok {
+					o.Data["allowedToDelegateTo"] = toStringSlice(r)
+				} else if _, ok := m["Clear"]; ok {
+					o.Data["allowedToDelegateTo"] = []string{}
+				} else if a, ok := m["Add"]; ok {
+					o.Data["allowedToDelegateTo"] = toStringSlice(a)
+				}
+				continue
+			}
+			o.Data["allowedToDelegateTo"] = toStringSlice(v)
 		case "SamAccountName":
 			sam := asString(v)
 			// AD appends "$" to a gMSA's or a computer's sAMAccountName on any
