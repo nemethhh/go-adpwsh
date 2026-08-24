@@ -259,6 +259,79 @@ func TestServiceAccountCreateRejectsMissingDNSHostName(t *testing.T) {
 	}
 }
 
+// TestServiceAccountUpdateDelete drives a full update → delete round trip
+// against fake.Directory, mirroring TestServiceAccountCreateGet: it exercises
+// clear-via-empty-string, a full SPN replace, a full principals replace, a
+// combined rename+move (GUID must survive, DN must reflect the new CN and
+// container), and finally Delete followed by a not-found Get.
+func TestServiceAccountUpdateDelete(t *testing.T) {
+	dir := fake.NewDirectory()
+	client := mustClient(t, adpwsh.Config{Transport: dir.Transport()})
+	ctx := context.Background()
+
+	g, err := client.ServiceAccount.Create(ctx, adpwsh.GMSASpec{
+		Name: "svc", SamAccountName: "svc", Container: "OU=x,DC=corp,DC=local",
+		DNSHostName: adpwsh.String("svc.corp.local"), Description: adpwsh.String("orig"),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Clear the description via an empty string; full-replace the SPNs.
+	spns := []string{"HTTP/svc.corp.local"}
+	upd, err := client.ServiceAccount.Update(ctx, adpwsh.ByGUID(g.GUID), adpwsh.GMSASpec{
+		Name: "svc", SamAccountName: "svc", Container: "OU=x,DC=corp,DC=local",
+		DNSHostName: adpwsh.String("svc.corp.local"), Description: adpwsh.String(""),
+		ServicePrincipalNames: &spns,
+	})
+	if err != nil {
+		t.Fatalf("Update (clear description, replace SPNs): %v", err)
+	}
+	if upd.Description != "" {
+		t.Fatalf("description not cleared: %q", upd.Description)
+	}
+	if len(upd.ServicePrincipalNames) != 1 || upd.ServicePrincipalNames[0] != "HTTP/svc.corp.local" {
+		t.Fatalf("ServicePrincipalNames = %v, want a single full replace", upd.ServicePrincipalNames)
+	}
+
+	// Full-replace PrincipalsAllowed.
+	principal := adpwsh.ByGUID("11111111-1111-1111-1111-111111111111")
+	upd, err = client.ServiceAccount.Update(ctx, adpwsh.ByGUID(g.GUID), adpwsh.GMSASpec{
+		Name: "svc", SamAccountName: "svc", Container: "OU=x,DC=corp,DC=local",
+		DNSHostName:       adpwsh.String("svc.corp.local"),
+		PrincipalsAllowed: []adpwsh.Identity{principal},
+	})
+	if err != nil {
+		t.Fatalf("Update (replace principals): %v", err)
+	}
+	if len(upd.PrincipalsAllowed) != 1 || upd.PrincipalsAllowed[0] != "11111111-1111-1111-1111-111111111111" {
+		t.Fatalf("PrincipalsAllowed = %v, want the one GUID", upd.PrincipalsAllowed)
+	}
+
+	// Rename and move together: the GUID must survive, and the DN must
+	// reflect both the new CN and the new container.
+	upd, err = client.ServiceAccount.Update(ctx, adpwsh.ByGUID(g.GUID), adpwsh.GMSASpec{
+		Name: "svc2", SamAccountName: "svc", Container: "OU=y,DC=corp,DC=local",
+		DNSHostName: adpwsh.String("svc.corp.local"),
+	})
+	if err != nil {
+		t.Fatalf("Update (rename+move): %v", err)
+	}
+	if upd.GUID != g.GUID {
+		t.Fatalf("GUID changed across rename+move: got %q, want %q", upd.GUID, g.GUID)
+	}
+	if upd.Name != "svc2" || upd.Container != "OU=y,DC=corp,DC=local" || upd.DN != "CN=svc2,OU=y,DC=corp,DC=local" {
+		t.Fatalf("renamed+moved gMSA = %+v", upd)
+	}
+
+	if err := client.ServiceAccount.Delete(ctx, adpwsh.ByGUID(g.GUID)); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := client.ServiceAccount.Get(ctx, adpwsh.ByGUID(g.GUID)); !errors.Is(err, adpwsh.ErrNotFound) {
+		t.Fatalf("Get after Delete = %v, want KindNotFound", err)
+	}
+}
+
 func gmsaData() map[string]any {
 	return map[string]any{
 		"objectGUID":                    "dd44ee55-0000-0000-0000-000000000004",

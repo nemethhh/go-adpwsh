@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/nemethhh/go-adpwsh/internal/addn"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
 
@@ -161,4 +162,116 @@ func (s *ServiceAccountClient) Search(ctx context.Context, q Query) ([]GMSA, err
 		models = append(models, *m)
 	}
 	return models, nil
+}
+
+// Update folds the attribute write, the rename and the move into one round
+// trip. ManagedPasswordIntervalInDays is never referenced here: it is
+// create-only, since Set-ADServiceAccount has no such parameter.
+func (s *ServiceAccountClient) Update(ctx context.Context, id Identity, spec GMSASpec) (*GMSA, error) {
+	const op = "ServiceAccount.Update"
+	if err := spec.validate(op, false); err != nil {
+		return nil, err
+	}
+
+	unlock := s.c.locks.lock(id.identityArg())
+	defer unlock()
+
+	current, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]any{"identity": id.identityArg(), "project": gmsaProject}
+
+	var ops adscript.AttrOps
+	set := map[string]any{"Identity": id.identityArg()}
+	applyStringField(&ops, set, "DNSHostName", "dNSHostName", spec.DNSHostName)
+	applyStringField(&ops, set, "Description", "description", spec.Description)
+	applyStringField(&ops, set, "DisplayName", "displayName", spec.DisplayName)
+	if spec.Enabled != nil && *spec.Enabled != current.Enabled {
+		set["Enabled"] = *spec.Enabled
+	}
+	if spec.TrustedForDelegation != nil && *spec.TrustedForDelegation != current.TrustedForDelegation {
+		set["TrustedForDelegation"] = *spec.TrustedForDelegation
+	}
+	// PrincipalsAllowed, ServicePrincipalNames and KerberosEncryptionType are
+	// full-replace, not diffed against current: a nil pointer/slice leaves the
+	// attribute alone, and any non-nil value (including an empty one) replaces
+	// it wholesale.
+	if spec.PrincipalsAllowed != nil {
+		set["PrincipalsAllowedToRetrieveManagedPassword"] = identityArgs(spec.PrincipalsAllowed)
+	}
+	if spec.ServicePrincipalNames != nil {
+		// Set-ADServiceAccount only accepts the {Add,Remove,Replace,Clear}
+		// hashtable form for ServicePrincipalNames; a plain list, which
+		// New-ADServiceAccount accepts, fails on a real DC.
+		set["ServicePrincipalNames"] = map[string]any{"Replace": *spec.ServicePrincipalNames}
+	}
+	if spec.KerberosEncryptionType != nil {
+		set["KerberosEncryptionType"] = *spec.KerberosEncryptionType
+	}
+	switch {
+	case spec.AccountExpiration.IsSet():
+		set["AccountExpirationDate"] = spec.AccountExpiration.Value().UTC().Format(time.RFC3339)
+	case spec.AccountExpiration.IsClear():
+		// Same reasoning as User.Update: accountExpires is a system attribute
+		// that is always present (its "never" value is 0x7FFFFFFFFFFFFFFF), so
+		// "never expires" is Set-ADServiceAccount -AccountExpirationDate $null,
+		// not -Clear accountExpires, which a real DC refuses as an illegal
+		// modify.
+		set["AccountExpirationDate"] = nil
+	}
+	if err := conflictToError(op, ops.Apply(set)); err != nil {
+		return nil, err
+	}
+	if len(set) > 1 {
+		payload["set"] = set
+	}
+
+	if spec.Name != current.Name {
+		payload["rename"] = map[string]any{"Identity": id.identityArg(), "NewName": spec.Name}
+	}
+	sameContainer, err := addn.EqualFold(spec.Container, current.Container)
+	if err != nil {
+		return nil, &Error{Kind: KindConstraint, Op: op, Err: err}
+	}
+	if !sameContainer {
+		payload["move"] = map[string]any{"Identity": id.identityArg(), "TargetPath": spec.Container}
+	}
+
+	if payload["set"] == nil && payload["rename"] == nil && payload["move"] == nil {
+		return current, nil
+	}
+
+	var out gmsaJSON
+	if err := s.c.exec(ctx, adscript.OpGMSAUpdate, payload, &out); err != nil {
+		return nil, withIdentity(err, op, id)
+	}
+	model, err := out.model()
+	if err != nil {
+		return nil, &Error{Kind: KindTransport, Op: op, Err: err}
+	}
+	return model, s.c.replicate(ctx, model.GUID)
+}
+
+// Delete removes a group Managed Service Account and returns nil only after a
+// re-read confirms it is gone.
+func (s *ServiceAccountClient) Delete(ctx context.Context, id Identity) error {
+	const op = "ServiceAccount.Delete"
+
+	unlock := s.c.locks.lock(id.identityArg())
+	defer unlock()
+
+	current, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		Deleted bool          `json:"deleted"`
+		Verify  presenceCheck `json:"verify"`
+	}
+	if err := s.c.exec(ctx, adscript.OpGMSADelete, map[string]any{"identity": current.GUID}, &out); err != nil {
+		return withIdentity(err, op, id)
+	}
+	return out.Verify.confirmAbsent(op, id, current.DN)
 }
