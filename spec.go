@@ -273,5 +273,46 @@ func (s GMSASpec) validate(op string, forCreate bool) error {
 	return nil
 }
 
+// ComputerSpec is the desired state of a computer account. Pointer fields
+// follow the same tri-state convention as GMSASpec: nil leaves the attribute
+// alone, a pointer to "" clears it, a pointer to a value sets it.
+//
+// Unlike GMSASpec, SamAccountName has no length cap here: the 15-char
+// NetBIOS limit gMSA enforces is a gMSA-specific constraint (the "$" AD
+// appends must still fit in 20 bytes downlevel-logon-name space), not a
+// general AD rule — AD accepts a computer sAMAccountName well past 15
+// characters, so validate must not reject one. There are also no
+// create-only fields: DNSHostName, unlike a gMSA's, is settable any time.
+type ComputerSpec struct {
+	Name                   string // CN; required
+	SamAccountName         string // required; "$" is added by AD; length is NOT capped here
+	Container              string // parent DN; required
+	DNSHostName            *string
+	Description            *string
+	DisplayName            *string
+	Location               *string
+	ManagedBy              *string
+	Enabled                *bool
+	TrustedForDelegation   *bool
+	ServicePrincipalNames  *[]string  // nil leaves alone, non-nil (incl. empty) replaces
+	AllowedToDelegateTo    *[]string  // nil leaves alone, non-nil (incl. empty) replaces
+	PrincipalsAllowed      []Identity // full-replace; nil leaves alone, non-nil (incl. empty) replaces
+	KerberosEncryptionType *[]string  // nil leaves alone, non-nil replaces
+	AccountExpiration      OptTime
+}
+
+func (s ComputerSpec) validate(op string, forCreate bool) error {
+	if err := validateName(op, s.Name); err != nil {
+		return err
+	}
+	if s.SamAccountName == "" {
+		return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf("SamAccountName is required")}
+	}
+	if err := validateContainer(op, s.Container); err != nil {
+		return err
+	}
+	return nil
+}
+
 // Int is the pointer helper for optional integers.
 func Int(i int) *int { return &i }
