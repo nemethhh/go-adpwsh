@@ -258,8 +258,8 @@ are deliberately absent from this release.
 
 **ServiceAccount** (group Managed Service Account) provides Create, Get, Update,
 Delete, and Search via `ServiceAccountClient`. Supported attributes include
-description, enabled, DNS hostname, service principal names, RBCD (principals
-allowed to retrieve managed password), Kerberos encryption types, and account
+description, enabled, DNS hostname, service principal names, principals allowed
+to retrieve the managed password, Kerberos encryption types, and account
 expiration; managed password interval and trusted for delegation are also present.
 
 **Computer** provides Create, Get, Update, Delete, and Search via `ComputerClient`.
