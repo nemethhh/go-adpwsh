@@ -54,6 +54,26 @@ type User struct {
 	AccountExpiration     *time.Time // nil means the account never expires
 }
 
+// GMSA is a group Managed Service Account as this library reads it back.
+type GMSA struct {
+	GUID                          string
+	DN                            string
+	Name                          string
+	SamAccountName                string
+	Container                     string
+	SID                           string
+	DNSHostName                   string
+	Description                   string
+	DisplayName                   string
+	Enabled                       bool
+	TrustedForDelegation          bool
+	PrincipalsAllowed             []string // objectGUIDs, resolved from the DNs AD returns
+	ServicePrincipalNames         []string
+	KerberosEncryptionType        []string
+	ManagedPasswordIntervalInDays int
+	AccountExpiration             *time.Time // nil means never
+}
+
 // GroupScope is the group's replication and membership scope.
 type GroupScope string
 

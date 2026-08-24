@@ -224,3 +224,47 @@ func (s UserSpec) validate(op string) error {
 	}
 	return nil
 }
+
+// GMSASpec is the desired state of a group Managed Service Account. Pointer
+// fields follow the tri-state convention: nil leaves the attribute alone, a
+// pointer to "" clears it, a pointer to a value sets it.
+type GMSASpec struct {
+	Name                          string // CN; required
+	SamAccountName                string // required; <= 15 chars, "$" is added by AD
+	Container                     string // parent DN; required
+	DNSHostName                   *string
+	Description                   *string
+	DisplayName                   *string
+	Enabled                       *bool
+	TrustedForDelegation          *bool
+	PrincipalsAllowed             []Identity // full-replace; nil leaves alone, non-nil (incl. empty) replaces
+	ServicePrincipalNames         *[]string  // nil leaves alone, non-nil (incl. empty) replaces
+	KerberosEncryptionType        *[]string  // nil leaves alone, non-nil replaces
+	AccountExpiration             OptTime
+	ManagedPasswordIntervalInDays *int // create-only; ignored on Update
+}
+
+const gmsaSamMaxLen = 15
+
+func (s GMSASpec) validate(op string) error {
+	if err := validateName(op, s.Name); err != nil {
+		return err
+	}
+	if s.SamAccountName == "" {
+		return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf("SamAccountName is required")}
+	}
+	if len(s.SamAccountName) > gmsaSamMaxLen {
+		return &Error{Kind: KindConstraint, Op: op,
+			Err: fmt.Errorf("SamAccountName %q is %d characters; a gMSA sAMAccountName must be at most %d", s.SamAccountName, len(s.SamAccountName), gmsaSamMaxLen)}
+	}
+	if err := validateContainer(op, s.Container); err != nil {
+		return err
+	}
+	if op == "GMSA.Create" && (s.DNSHostName == nil || *s.DNSHostName == "") {
+		return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf("DNSHostName is required")}
+	}
+	return nil
+}
+
+// Int is the pointer helper for optional integers.
+func Int(i int) *int { return &i }
