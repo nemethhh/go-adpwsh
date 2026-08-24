@@ -39,6 +39,12 @@ const (
 	OpGMSADelete = "gmsa_delete"
 	OpGMSASearch = "gmsa_search"
 
+	OpComputerCreate = "computer_create"
+	OpComputerRead   = "computer_read"
+	OpComputerUpdate = "computer_update"
+	OpComputerDelete = "computer_delete"
+	OpComputerSearch = "computer_search"
+
 	OpACLRead       = "acl_read"
 	OpACLGrant      = "acl_grant"
 	OpACLRevoke     = "acl_revoke"
@@ -53,6 +59,7 @@ var ops = []string{
 	OpUserCreate, OpUserRead, OpUserUpdate, OpUserDelete, OpUserSetPassword,
 	OpOUSearch, OpGroupSearch, OpUserSearch,
 	OpGMSACreate, OpGMSARead, OpGMSAUpdate, OpGMSADelete, OpGMSASearch,
+	OpComputerCreate, OpComputerRead, OpComputerUpdate, OpComputerDelete, OpComputerSearch,
 	OpACLRead, OpACLGrant, OpACLRevoke, OpSchemaResolve,
 }
 

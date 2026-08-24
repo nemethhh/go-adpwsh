@@ -61,15 +61,23 @@ function Convert-AdUser($o) {
     }
 }
 
+# Convert-KerberosEncType normalizes a KerberosEncryptionType /
+# msDS-SupportedEncryptionTypes value to its string-list form. AD hands this
+# back as a single comma-joined "flags" string (e.g. "AES128, AES256") rather
+# than a real array, so every reader that surfaces it splits the same way.
+function Convert-KerberosEncType($k) {
+    $out = @()
+    foreach ($part in ("$k" -split ',\s*')) { if ($part) { $out += $part.Trim() } }
+    return $out
+}
+
 function Convert-AdServiceAccount($o) {
     $principals = @()
     foreach ($dn in @($o.PrincipalsAllowedToRetrieveManagedPassword)) {
         if ($dn) { $principals += (Get-ADObject -Identity $dn @common).ObjectGUID.ToString() }
     }
     $kerb = @()
-    foreach ($k in $o.KerberosEncryptionType) {
-        foreach ($part in ("$k" -split ',\s*')) { if ($part) { $kerb += $part.Trim() } }
-    }
+    foreach ($k in @($o.KerberosEncryptionType)) { $kerb += (Convert-KerberosEncType $k) }
     return [ordered]@{
         objectGUID                    = $o.ObjectGUID.ToString()
         distinguishedName             = $o.DistinguishedName
@@ -86,6 +94,41 @@ function Convert-AdServiceAccount($o) {
         kerberosEncryptionType        = @($kerb)
         managedPasswordIntervalInDays = [int](@($o.ManagedPasswordIntervalInDays)[0])
         accountExpirationDate         = (ConvertTo-AdIsoTime $o.AccountExpirationDate)
+    }
+}
+
+# Convert-AdComputer resolves msDS-AllowedToDelegateTo's RBCD companion
+# (PrincipalsAllowedToDelegateToAccount) from the DNs AD hands back to the
+# objectGUIDs the provider stores, mirroring Convert-AdServiceAccount's
+# principal resolution above.
+function Convert-AdComputer($c) {
+    $princ = @()
+    foreach ($dn in @($c.PrincipalsAllowedToDelegateToAccount)) {
+        if ($dn) { $princ += (Get-ADObject -Identity $dn @common).ObjectGUID.ToString() }
+    }
+    $ket = @()
+    foreach ($k in @($c.'msDS-SupportedEncryptionTypes')) { $ket += (Convert-KerberosEncType $k) }
+    return [ordered]@{
+        ObjectGUID             = $c.ObjectGUID.ToString()
+        DistinguishedName      = $c.DistinguishedName
+        Name                   = $c.Name
+        SamAccountName         = $c.SamAccountName
+        SID                    = $c.SID.Value
+        Enabled                = [bool]$c.Enabled
+        DNSHostName            = $c.DNSHostName
+        Description            = $c.Description
+        DisplayName            = $c.DisplayName
+        Location               = $c.Location
+        ManagedBy              = $c.ManagedBy
+        TrustedForDelegation   = [bool]$c.TrustedForDelegation
+        ServicePrincipalNames  = @($c.ServicePrincipalName)
+        AllowedToDelegateTo    = @($c.'msDS-AllowedToDelegateTo')
+        PrincipalsAllowed      = @($princ)
+        KerberosEncryptionType = @($ket)
+        AccountExpirationDate  = if ($c.AccountExpirationDate) { $c.AccountExpirationDate.ToString('o') } else { '' }
+        OperatingSystem            = $c.OperatingSystem
+        OperatingSystemVersion     = $c.OperatingSystemVersion
+        OperatingSystemServicePack = $c.OperatingSystemServicePack
     }
 }
 
