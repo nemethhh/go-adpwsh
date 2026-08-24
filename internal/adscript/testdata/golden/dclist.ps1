@@ -67,8 +67,8 @@ function Convert-AdServiceAccount($o) {
         if ($dn) { $principals += (Get-ADObject -Identity $dn @common).ObjectGUID.ToString() }
     }
     $kerb = @()
-    if ($null -ne $o.KerberosEncryptionType) {
-        foreach ($k in ($o.KerberosEncryptionType.ToString() -split ',\s*')) { if ($k) { $kerb += $k.Trim() } }
+    foreach ($k in $o.KerberosEncryptionType) {
+        foreach ($part in ("$k" -split ',\s*')) { if ($part) { $kerb += $part.Trim() } }
     }
     return [ordered]@{
         objectGUID                    = $o.ObjectGUID.ToString()
