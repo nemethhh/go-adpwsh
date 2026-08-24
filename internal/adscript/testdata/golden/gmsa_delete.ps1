@@ -120,9 +120,8 @@ function Test-AdMember($group, $memberId) {
 
 try {
     $data = & {
-        $r = @(Get-ADUser -LDAPFilter $p.filter -SearchBase $p.searchBase `
-                 -SearchScope $p.scope -ResultSetSize $p.sizeLimit -Properties $p.project @common)
-        [ordered]@{ results = @($r | ForEach-Object { Convert-AdUser $_ }) }
+        $null = Remove-ADServiceAccount -Identity $p.identity -Confirm:$false @common
+        [ordered]@{ deleted = $true; verify = (Test-AdPresence $p.identity) }
     }
     $out = @{ ok = $true; data = $data }
 } catch {

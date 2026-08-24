@@ -61,6 +61,34 @@ function Convert-AdUser($o) {
     }
 }
 
+function Convert-AdServiceAccount($o) {
+    $principals = @()
+    foreach ($dn in @($o.PrincipalsAllowedToRetrieveManagedPassword)) {
+        if ($dn) { $principals += (Get-ADObject -Identity $dn @common).ObjectGUID.ToString() }
+    }
+    $kerb = @()
+    if ($null -ne $o.KerberosEncryptionType) {
+        foreach ($k in ($o.KerberosEncryptionType.ToString() -split ',\s*')) { if ($k) { $kerb += $k.Trim() } }
+    }
+    return [ordered]@{
+        objectGUID                    = $o.ObjectGUID.ToString()
+        distinguishedName             = $o.DistinguishedName
+        name                          = $o.Name
+        samAccountName                = $o.SamAccountName
+        sid                           = $o.SID.Value
+        dnsHostName                   = $o.DNSHostName
+        description                   = $o.Description
+        displayName                   = $o.DisplayName
+        enabled                       = [bool]$o.Enabled
+        trustedForDelegation          = [bool]$o.TrustedForDelegation
+        principalsAllowed             = @($principals)
+        servicePrincipalNames         = @($o.ServicePrincipalNames)
+        kerberosEncryptionType        = @($kerb)
+        managedPasswordIntervalInDays = [int]$o.ManagedPasswordIntervalInDays
+        accountExpirationDate         = (ConvertTo-AdIsoTime $o.AccountExpirationDate)
+    }
+}
+
 # Test-AdPresence reports whether an object is still resolvable, and when it is
 # not, hands the exception back for classification in Go. Treating any failure
 # as "gone" would let a server-down error look like a successful delete.

@@ -33,6 +33,12 @@ const (
 	OpGroupSearch = "group_search"
 	OpUserSearch  = "user_search"
 
+	OpGMSACreate = "gmsa_create"
+	OpGMSARead   = "gmsa_read"
+	OpGMSAUpdate = "gmsa_update"
+	OpGMSADelete = "gmsa_delete"
+	OpGMSASearch = "gmsa_search"
+
 	OpACLRead       = "acl_read"
 	OpACLGrant      = "acl_grant"
 	OpACLRevoke     = "acl_revoke"
@@ -46,6 +52,7 @@ var ops = []string{
 	OpGroupMembersRead, OpGroupMembersReadRecursive, OpGroupMembersAdd, OpGroupMembersRemove, OpGroupMemberCheck,
 	OpUserCreate, OpUserRead, OpUserUpdate, OpUserDelete, OpUserSetPassword,
 	OpOUSearch, OpGroupSearch, OpUserSearch,
+	OpGMSACreate, OpGMSARead, OpGMSAUpdate, OpGMSADelete, OpGMSASearch,
 	OpACLRead, OpACLGrant, OpACLRevoke, OpSchemaResolve,
 }
 
