@@ -84,7 +84,7 @@ function Convert-AdServiceAccount($o) {
         principalsAllowed             = @($principals)
         servicePrincipalNames         = @($o.ServicePrincipalNames)
         kerberosEncryptionType        = @($kerb)
-        managedPasswordIntervalInDays = [int]$o.ManagedPasswordIntervalInDays
+        managedPasswordIntervalInDays = [int](@($o.ManagedPasswordIntervalInDays)[0])
         accountExpirationDate         = (ConvertTo-AdIsoTime $o.AccountExpirationDate)
     }
 }
