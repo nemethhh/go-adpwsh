@@ -2,6 +2,7 @@ package adpwsh_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
@@ -229,6 +230,32 @@ func TestServiceAccountSearchOverFake(t *testing.T) {
 	}
 	if len(all) != 2 {
 		t.Fatalf("subtree search = %d results, want 2", len(all))
+	}
+}
+
+// TestServiceAccountCreateRejectsMissingDNSHostName exercises the real call
+// path (Client.ServiceAccount.Create), not spec.validate directly. DNSHostName
+// is documented as required on create; a spec that omits it must be rejected
+// with KindConstraint before any round trip, not silently accepted.
+func TestServiceAccountCreateRejectsMissingDNSHostName(t *testing.T) {
+	tr := fake.New(func(c fake.Call) fake.Response {
+		if c.Op == "rootdse" {
+			return fake.OK(rootDSE())
+		}
+		t.Fatalf("validation must fail before any round trip; got op %q", c.Op)
+		return fake.Response{}
+	})
+	client := mustClient(t, adpwsh.Config{Transport: tr})
+
+	_, err := client.ServiceAccount.Create(context.Background(), adpwsh.GMSASpec{
+		Name: "svc-web", SamAccountName: "svc-web", Container: "OU=x,DC=corp,DC=local",
+		// DNSHostName deliberately omitted.
+	})
+	if err == nil {
+		t.Fatal("Create with no DNSHostName must fail; it did not")
+	}
+	if !errors.Is(err, adpwsh.ErrConstraint) {
+		t.Fatalf("want KindConstraint, got %v", err)
 	}
 }
 

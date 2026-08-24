@@ -67,7 +67,7 @@ func (j gmsaJSON) model() (*GMSA, error) {
 // and surface the error.
 func (s *ServiceAccountClient) Create(ctx context.Context, spec GMSASpec) (*GMSA, error) {
 	const op = "ServiceAccount.Create"
-	if err := spec.validate(op); err != nil {
+	if err := spec.validate(op, true); err != nil {
 		return nil, err
 	}
 

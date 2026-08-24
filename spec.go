@@ -246,7 +246,14 @@ type GMSASpec struct {
 
 const gmsaSamMaxLen = 15
 
-func (s GMSASpec) validate(op string) error {
+// forCreate follows the same convention GroupSpec.validate uses: the op
+// string is for error stamping only, never for branching. Branching on it
+// (as an earlier version of this method did, comparing op == "GMSA.Create")
+// silently breaks the moment a caller's op string doesn't match that literal
+// — which is exactly what happened here, since ServiceAccountClient.Create
+// (following the <Resource>.<Verb> convention every other sub-client uses)
+// passes "ServiceAccount.Create", not "GMSA.Create".
+func (s GMSASpec) validate(op string, forCreate bool) error {
 	if err := validateName(op, s.Name); err != nil {
 		return err
 	}
@@ -260,7 +267,7 @@ func (s GMSASpec) validate(op string) error {
 	if err := validateContainer(op, s.Container); err != nil {
 		return err
 	}
-	if op == "GMSA.Create" && (s.DNSHostName == nil || *s.DNSHostName == "") {
+	if forCreate && (s.DNSHostName == nil || *s.DNSHostName == "") {
 		return &Error{Kind: KindConstraint, Op: op, Err: fmt.Errorf("DNSHostName is required")}
 	}
 	return nil
