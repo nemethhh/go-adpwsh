@@ -74,6 +74,32 @@ type GMSA struct {
 	AccountExpiration             *time.Time // nil means never
 }
 
+// Computer is an Active Directory computer account (objectClass "computer").
+// OperatingSystem* are read-only: the joined machine owns them.
+type Computer struct {
+	GUID                       string
+	DN                         string
+	Name                       string
+	SamAccountName             string
+	Container                  string
+	SID                        string
+	Enabled                    bool
+	DNSHostName                string
+	Description                string
+	DisplayName                string
+	Location                   string
+	ManagedBy                  string // read back as a DN
+	TrustedForDelegation       bool
+	ServicePrincipalNames      []string
+	AllowedToDelegateTo        []string // msDS-AllowedToDelegateTo (SPNs)
+	PrincipalsAllowed          []string // RBCD principals, as objectGUIDs
+	KerberosEncryptionType     []string
+	AccountExpiration          *time.Time
+	OperatingSystem            string
+	OperatingSystemVersion     string
+	OperatingSystemServicePack string
+}
+
 // GroupScope is the group's replication and membership scope.
 type GroupScope string
 
