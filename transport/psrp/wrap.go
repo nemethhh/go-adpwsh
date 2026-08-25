@@ -53,20 +53,78 @@ func exitCode(hadErrors bool) int {
 	return 0
 }
 
-// mapExecuteError classifies a genuine transport failure. Retryable pool/queue
-// conditions and context cancellation are KindTransient; anything else is a
-// dial/auth/protocol failure and is KindTransport.
+// mapExecuteError classifies a genuine transport failure. KindTransient is a
+// promise to core.exec, not a severity label: it means the operation
+// provably did not execute, so re-issuing the identical script and payload
+// cannot duplicate a side effect (see Kind.retryable in errors.go). Only the
+// three go-psrp sentinels below meet that bar — each short-circuits on a
+// semaphore, circuit-breaker or connection-state check before anything is
+// sent, by construction, every time. Everything else, including a context
+// error, is KindTransport and is never retried by core.exec.
+//
+// context.Canceled and context.DeadlineExceeded deliberately do NOT join the
+// sentinels, even though a caller-side timeout sounds exactly like the kind
+// of thing worth retrying. In the WSMan backend this package always
+// configures, PreparePipeline is the network send of the CreatePipeline
+// payload — the script itself — and SkipInvokeSend() then makes Invoke a
+// no-op. A deadline or cancellation observed while awaiting that response is
+// indistinguishable from one observed before the send: the script may
+// already have reached the server. Classifying it as transient risked
+// executing a non-idempotent operation — or a create — more than once (the
+// bug this comment documents). The sentinels are provably pre-send; a
+// context error is not provably anything, so it fails closed to
+// KindTransport. errors.Is unwraps to any depth, so a wrapped context error
+// (e.g. startPipeline's "prepare pipeline: %w") classifies the same as a
+// bare one.
+//
+// A caller-side cancellation loses nothing by this asymmetry: core.backoff
+// already checks the caller's own ctx.Done() and aborts the retry loop the
+// moment it fires, independent of how this function classifies the error.
+// The case this guards is a deadline or reset arising from the transport's
+// own timeout, or from inside go-psrp's HTTP client, while the caller's
+// context is still alive — there, the Kind returned here is the only thing
+// standing between one execution and up to Retry.MaxAttempts of them.
+//
+// This Kind answers only "is it safe to retry?" (no, for a context error).
+// It deliberately does not answer "is the shell dead?" — see
+// isCallerTimeout, which Run consults separately for that second question.
 func mapExecuteError(err error) error {
 	switch {
 	case errors.Is(err, psrp.ErrQueueFull),
 		errors.Is(err, psrp.ErrCircuitOpen),
-		errors.Is(err, psrp.ErrNotConnected),
-		errors.Is(err, context.Canceled),
-		errors.Is(err, context.DeadlineExceeded):
+		errors.Is(err, psrp.ErrNotConnected):
 		return &adpwsh.Error{Kind: adpwsh.KindTransient, Op: "Run", Err: err}
 	default:
+		// Known false negative, accepted deliberately: a timeout while queued
+		// for a concurrency slot ("pool busy: context deadline exceeded")
+		// provably never reached the network, so it would be safe to retry.
+		// It lands here anyway, because the only thing distinguishing it from a
+		// timeout awaiting a response is text we would have to match, and the
+		// cost of guessing wrong is a duplicated write. Failing closed on a
+		// retryable case loses one retry; failing open loses data.
 		return &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
 	}
+}
+
+// isCallerTimeout reports whether err is a context cancellation or deadline,
+// unwrapped to any depth. mapExecuteError already answers whether this is
+// safe to retry (no); this answers the second, independent question Run
+// asks of a failed Execute: does it mean the shell is dead? It does not. A
+// context error says only that the caller (or an ancestor context) stopped
+// waiting — it carries no information about whether the shell that was
+// mid-request is still alive. The shell is, if anything, probably still
+// good: the caller gave up, the server did not refuse anything.
+//
+// This distinction has a real cost if ignored, not just a theoretical one.
+// Treating a context error as evidence of a dead shell would invalidate a
+// conn that is probably fine, undoing the shell-leak fix Config.IdleTimeout
+// exists for: the discarded client is never closed by this package, only
+// left to expire on its own lease (Config.IdleTimeout, 2 minutes by
+// default), and its replacement pays the cost this package works hard to
+// avoid paying twice — reimporting the AD module (roughly 366ms) on first
+// use. A timeout is not rare enough for that to be a rounding error.
+func isCallerTimeout(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // deadShellRetryExhaustedMessage is startPipeline's own literal (client.go,

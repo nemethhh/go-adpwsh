@@ -44,12 +44,15 @@ func (c *conn) ensureConnected(ctx context.Context) error {
 
 // invalidate discards the dead client behind conn and replaces it with a
 // freshly built one, then marks the conn as needing to (re)connect. Call it
-// only after a transport-class Execute failure: a dead or reaped shell must
-// not go on reporting itself connected, or every later Run through this
-// pooled conn would fail for the life of the process. A transient failure (a
-// busy queue, a context deadline) means no such thing — the shell is still
-// good — so callers must not invalidate on that path; see mapExecuteError's
-// classification and its call site in Run.
+// only when the shell itself is actually suspect: a dead or reaped shell
+// must not go on reporting itself connected, or every later Run through this
+// pooled conn would fail for the life of the process. Two different failure
+// classes must NOT reach this call, for two different reasons: a busy-queue
+// sentinel (KindTransient; see mapExecuteError) means the shell is fine and
+// nothing was even attempted, and a context cancellation or deadline
+// (KindTransport, but see isCallerTimeout) means the caller gave up — that
+// says nothing about the shell either. Run's call site checks both before
+// invalidating.
 //
 // Simply flipping a local "connected" flag is not enough: go-psrp's own
 // Client tracks its own internal connected state, set only by a successful
@@ -206,10 +209,20 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 	mapped := mapExecuteError(execErr)
 	var ae *adpwsh.Error
 	if !errors.As(mapped, &ae) || ae.Kind == adpwsh.KindTransient {
-		// A busy queue or a context deadline: the shell is fine, and either
-		// the caller asked to stop or will simply try again later. Leave the
-		// conn exactly as it was — tearing down a good shell here would be a
-		// performance regression, not a fix.
+		// A busy queue: the shell is fine, and the caller will simply try
+		// again later. Leave the conn exactly as it was — tearing down a
+		// good shell here would be a performance regression, not a fix.
+		return adpwsh.Result{}, mapped
+	}
+
+	if isCallerTimeout(execErr) {
+		// KindTransport (mapExecuteError already refused to call this
+		// retryable), but that is a "safe to retry?" answer, not a "is the
+		// shell dead?" one — see isCallerTimeout's doc. The caller gave up;
+		// the shell is probably still good. Invalidating here would tear
+		// down a live client on every timeout and leak it for up to
+		// Config.IdleTimeout, undoing the shell-leak fix. Leave the conn
+		// alone, exactly as for the transient sentinels above.
 		return adpwsh.Result{}, mapped
 	}
 

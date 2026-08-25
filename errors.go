@@ -18,6 +18,32 @@ const (
 	KindConstraint
 	KindPassword
 	KindReferral
+	// KindTransient means the operation provably did not execute: the
+	// failure occurred before the script (or, for a transport, the request
+	// carrying it) was ever sent, so re-issuing the identical script and
+	// payload cannot duplicate a side effect. This is the bar a producer of
+	// KindTransient must clear — not "this looks like it might be worth
+	// retrying," but "nothing happened, by construction, every time." An AD
+	// result code that comes back through the envelope (RPC_S_SERVER_BUSY
+	// and friends in classByCode) clears it: the script ran, the cmdlet was
+	// attempted, and AD refused it before doing anything. A transport-level
+	// failure clears it only when it is raised by a pre-send check (a
+	// semaphore, a circuit breaker, a not-yet-connected guard) that runs
+	// before any bytes carrying the script leave the process.
+	//
+	// Anything that merely *might* not have executed is not transient, and
+	// must map to KindTransport (or another non-retryable Kind) instead. In
+	// particular, a context cancellation or deadline observed while awaiting
+	// a response is not transient: depending on the transport, the script
+	// may already have reached the server before the deadline fired, so the
+	// failure and a completed execution are indistinguishable from here.
+	// This is the exact bug that once made transport/psrp/wrap.go's
+	// mapExecuteError treat context.Canceled/context.DeadlineExceeded as
+	// KindTransient — up to Retry.MaxAttempts re-issues of an operation that
+	// may have already run. See mapExecuteError's doc for the WSMan-specific
+	// mechanics and why a caller-side cancellation loses nothing by staying
+	// non-retryable (core.backoff already aborts on the caller's own
+	// ctx.Done()).
 	KindTransient
 	KindTransport
 	KindInvalidAttribute
@@ -62,8 +88,14 @@ func (k Kind) String() string {
 	}
 }
 
-// retryable is deliberately narrow. Retrying an access-denied or a
-// duplicate-object error only delays a clear message.
+// retryable is deliberately narrow, and narrow for two different reasons.
+// Retrying an access-denied or a duplicate-object error only delays a clear
+// message — that failure is final, retrying wastes time. Retrying anything
+// that is not KindTransient risks something worse than wasted time: KindTransient
+// is the only Kind whose contract guarantees the operation provably did not
+// execute (see its doc), so it is the only Kind core.exec may safely
+// re-issue the identical script and payload against. A Kind added later must
+// not be folded into this check unless it can make that same guarantee.
 func (k Kind) retryable() bool { return k == KindTransient }
 
 // Error is the single error type this library returns. AD's raw detail is

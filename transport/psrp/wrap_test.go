@@ -58,16 +58,99 @@ func TestJoinObjectsAndExitCode(t *testing.T) {
 	}
 }
 
+// TestMapExecuteError pins mapExecuteError's retry/no-retry boundary.
+// KindTransient must mean "provably nothing executed": the three go-psrp
+// sentinels satisfy that by construction (they short-circuit on a semaphore,
+// circuit-breaker or connection-state check before anything is sent), so they
+// stay KindTransient. A context error does not satisfy that bar — in the
+// WSMan backend, PreparePipeline is the network send of the script itself,
+// and a deadline or cancellation can fire while awaiting the response, i.e.
+// after the script already reached the server — so both context.Canceled and
+// context.DeadlineExceeded, bare or wrapped to any depth, must fall through
+// to KindTransport, which core.exec never retries.
 func TestMapExecuteError(t *testing.T) {
 	var e *adpwsh.Error
-	if !errors.As(mapExecuteError(psrp.ErrQueueFull), &e) || e.Kind != adpwsh.KindTransient {
-		t.Error("ErrQueueFull should map to KindTransient")
+
+	transientCases := []struct {
+		name string
+		err  error
+	}{
+		{"ErrQueueFull", psrp.ErrQueueFull},
+		{"ErrCircuitOpen", psrp.ErrCircuitOpen},
+		{"ErrNotConnected", psrp.ErrNotConnected},
 	}
-	if !errors.As(mapExecuteError(context.DeadlineExceeded), &e) || e.Kind != adpwsh.KindTransient {
-		t.Error("context deadline should map to KindTransient")
+	for _, tc := range transientCases {
+		if !errors.As(mapExecuteError(tc.err), &e) || e.Kind != adpwsh.KindTransient {
+			t.Errorf("%s should map to KindTransient (pre-send sentinel; provably nothing executed)", tc.name)
+		}
 	}
+
+	nonRetryableCases := []struct {
+		name string
+		err  error
+	}{
+		{"bare context.DeadlineExceeded", context.DeadlineExceeded},
+		{"bare context.Canceled", context.Canceled},
+		// The shape that actually occurs: startPipeline wraps a deadline hit
+		// mid-PreparePipeline as "prepare pipeline: %w". errors.Is unwraps to
+		// any depth, so this must classify the same as the bare error.
+		{"wrapped deadline (prepare pipeline: %w)", fmt.Errorf("prepare pipeline: %w", context.DeadlineExceeded)},
+	}
+	for _, tc := range nonRetryableCases {
+		if !errors.As(mapExecuteError(tc.err), &e) || e.Kind != adpwsh.KindTransport {
+			t.Errorf("%s should map to KindTransport (not provably pre-execution; must not retry)", tc.name)
+		}
+	}
+
 	if !errors.As(mapExecuteError(errors.New("dial tcp: refused")), &e) || e.Kind != adpwsh.KindTransport {
 		t.Error("unknown should map to KindTransport")
+	}
+}
+
+// TestMapExecuteErrorNeverRetriesContextError is a standalone guard for the
+// invariant this fix restores: a context error must never again become
+// retryable. It exists separately from TestMapExecuteError so a future
+// change that reintroduces context.Canceled/context.DeadlineExceeded into
+// the KindTransient branch fails a test whose name says exactly what broke.
+func TestMapExecuteErrorNeverRetriesContextError(t *testing.T) {
+	for _, ctxErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		var e *adpwsh.Error
+		if !errors.As(mapExecuteError(ctxErr), &e) {
+			t.Fatalf("mapExecuteError(%v) did not produce an *adpwsh.Error", ctxErr)
+		}
+		if e.Kind == adpwsh.KindTransient {
+			t.Errorf("mapExecuteError(%v) = KindTransient; a context error is not provably pre-execution and must never be retryable", ctxErr)
+		}
+	}
+}
+
+// TestIsCallerTimeout pins the second, independent classification Run needs
+// alongside mapExecuteError's Kind: whether a failure means the shell is
+// dead. A context error must answer false here even though mapExecuteError
+// makes it non-retryable — the two questions are deliberately decoupled
+// (see isCallerTimeout's doc and Run's call site). A sentinel or an
+// unrelated transport error must also answer false: neither is a context
+// error, so this function has nothing to say about them one way or the
+// other — Run's own invalidate-or-not branching handles those cases through
+// other means.
+func TestIsCallerTimeout(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"bare context.DeadlineExceeded", context.DeadlineExceeded, true},
+		{"bare context.Canceled", context.Canceled, true},
+		{"wrapped deadline (prepare pipeline: %w)", fmt.Errorf("prepare pipeline: %w", context.DeadlineExceeded), true},
+		{"wrapped cancellation (prepare pipeline: %w)", fmt.Errorf("prepare pipeline: %w", context.Canceled), true},
+		{"ErrQueueFull is not a context error", psrp.ErrQueueFull, false},
+		{"unrelated transport error", errors.New("dial tcp: connection refused"), false},
+	}
+	for _, tc := range cases {
+		if got := isCallerTimeout(tc.err); got != tc.want {
+			t.Errorf("%s: isCallerTimeout = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
