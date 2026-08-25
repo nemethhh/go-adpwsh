@@ -186,12 +186,22 @@ func TestBuildPSRPConfigLeavesGoPSRPRetryMachineryOff(t *testing.T) {
 	}
 }
 
-// TestRunTransientFailureDoesNotInvalidateConn: a context deadline (or other
-// KindTransient condition) does not mean the shell is dead. Run must not
-// rebuild the conn or retry — the shell is fine, and the caller asked to
-// stop.
+// TestRunTransientFailureDoesNotInvalidateConn: a genuinely transient,
+// provably-pre-send condition (one of the three go-psrp sentinels
+// mapExecuteError recognizes) does not mean the shell is dead. Run must not
+// rebuild the conn or retry — the shell is fine, and the caller (or
+// core.exec, one layer up) will simply try again later.
+//
+// This must NOT use a context error as its fixture: a context deadline or
+// cancellation is exactly the condition mapExecuteError refuses to treat as
+// transient, because in the WSMan backend a deadline can fire after the
+// script already reached the server (see wrap.go's mapExecuteError doc).
+// TestRunSurfacesContextErrorAsTransportAndDoesNotRetry below covers that
+// case, where the conn IS rebuilt (out of caution — its state is genuinely
+// unknown) but the isDeadShellFailure-gated retry still correctly refuses to
+// fire.
 func TestRunTransientFailureDoesNotInvalidateConn(t *testing.T) {
-	f := &fakeExec{execErr: context.DeadlineExceeded}
+	f := &fakeExec{execErr: psrp.ErrQueueFull}
 	built := 0
 	c := &conn{
 		exec: f,
@@ -214,6 +224,43 @@ func TestRunTransientFailureDoesNotInvalidateConn(t *testing.T) {
 	}
 	if f.calls != 1 {
 		t.Errorf("Execute calls = %d, want 1 (no retry for a transient failure)", f.calls)
+	}
+}
+
+// TestRunSurfacesContextErrorAsTransportAndDoesNotRetry pins the psrp-level
+// half of the retry-safety fix: a context deadline or cancellation from
+// Execute is not one of the three provably-pre-send sentinels, so
+// mapExecuteError now classifies it KindTransport (see wrap.go), not
+// KindTransient. Run therefore does not take the early "shell is fine"
+// return; it conservatively rebuilds the conn, exactly as it would for any
+// other transport-class failure — but the retry gate below that
+// (isDeadShellFailure) still correctly refuses to fire, because a bare
+// context error is not one of its confirmed dead-shell signatures. Net
+// effect: the operation is surfaced once, never re-issued — which is the
+// entire point of the fix this test guards.
+func TestRunSurfacesContextErrorAsTransportAndDoesNotRetry(t *testing.T) {
+	for _, ctxErr := range []error{context.DeadlineExceeded, context.Canceled} {
+		f := &fakeExec{execErr: ctxErr}
+		built := 0
+		c := &conn{
+			exec: f,
+			up:   true,
+			build: func() (executor, error) {
+				built++
+				return &fakeExec{result: &psrp.Result{}}, nil
+			},
+		}
+		tr := &Transport{cfg: Config{Host: "dc"}.WithDefaults(), idle: make(chan *conn, 1)}
+		tr.idle <- c
+
+		_, err := tr.Run(context.Background(), encode("x"), nil)
+		var e *adpwsh.Error
+		if !errors.As(err, &e) || e.Kind != adpwsh.KindTransport {
+			t.Fatalf("%v: want KindTransport, got %v", ctxErr, err)
+		}
+		if f.calls != 1 {
+			t.Errorf("%v: Execute calls = %d, want 1 (a context error must never be retried, here or in core.exec)", ctxErr, f.calls)
+		}
 	}
 }
 

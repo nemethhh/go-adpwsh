@@ -1,7 +1,6 @@
 package psrp
 
 import (
-	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -53,16 +52,42 @@ func exitCode(hadErrors bool) int {
 	return 0
 }
 
-// mapExecuteError classifies a genuine transport failure. Retryable pool/queue
-// conditions and context cancellation are KindTransient; anything else is a
-// dial/auth/protocol failure and is KindTransport.
+// mapExecuteError classifies a genuine transport failure. KindTransient is a
+// promise to core.exec, not a severity label: it means the operation
+// provably did not execute, so re-issuing the identical script and payload
+// cannot duplicate a side effect (see Kind.retryable in errors.go). Only the
+// three go-psrp sentinels below meet that bar — each short-circuits on a
+// semaphore, circuit-breaker or connection-state check before anything is
+// sent, by construction, every time. Everything else, including a context
+// error, is KindTransport and is never retried by core.exec.
+//
+// context.Canceled and context.DeadlineExceeded deliberately do NOT join the
+// sentinels, even though a caller-side timeout sounds exactly like the kind
+// of thing worth retrying. In the WSMan backend this package always
+// configures, PreparePipeline is the network send of the CreatePipeline
+// payload — the script itself — and SkipInvokeSend() then makes Invoke a
+// no-op. A deadline or cancellation observed while awaiting that response is
+// indistinguishable from one observed before the send: the script may
+// already have reached the server. Classifying it as transient risked
+// executing a non-idempotent operation — or a create — more than once (the
+// bug this comment documents). The sentinels are provably pre-send; a
+// context error is not provably anything, so it fails closed to
+// KindTransport. errors.Is unwraps to any depth, so a wrapped context error
+// (e.g. startPipeline's "prepare pipeline: %w") classifies the same as a
+// bare one.
+//
+// A caller-side cancellation loses nothing by this asymmetry: core.backoff
+// already checks the caller's own ctx.Done() and aborts the retry loop the
+// moment it fires, independent of how this function classifies the error.
+// The case this guards is a deadline or reset arising from the transport's
+// own timeout, or from inside go-psrp's HTTP client, while the caller's
+// context is still alive — there, the Kind returned here is the only thing
+// standing between one execution and up to Retry.MaxAttempts of them.
 func mapExecuteError(err error) error {
 	switch {
 	case errors.Is(err, psrp.ErrQueueFull),
 		errors.Is(err, psrp.ErrCircuitOpen),
-		errors.Is(err, psrp.ErrNotConnected),
-		errors.Is(err, context.Canceled),
-		errors.Is(err, context.DeadlineExceeded):
+		errors.Is(err, psrp.ErrNotConnected):
 		return &adpwsh.Error{Kind: adpwsh.KindTransient, Op: "Run", Err: err}
 	default:
 		return &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
