@@ -30,10 +30,17 @@ func requireRealPwsh(t *testing.T) string {
 	return pwsh
 }
 
-// echoScript reads the payload the way every shipped script's preamble does and
-// writes back what it saw, framed by the library's sentinels. It deliberately
-// does not Import-Module ActiveDirectory: that module is Windows-only, and none
-// of the properties under test here need it.
+// echoScript reads the payload and writes back what it saw, framed by the
+// library's sentinels. It no longer reads the payload the way a shipped
+// script's preamble does: the preamble now calls plain ConvertFrom-Json and
+// walks the result itself (ConvertTo-AdHashtable in preamble.ps1) so that it
+// also works on Windows PowerShell 5.1, while this fixture still uses the
+// ConvertFrom-Json -AsHashtable switch, which is PowerShell 6+ only -- hence
+// requireRealPwsh below staying a real-pwsh-required (not 5.1-compatible)
+// gate. That is fine for what this tier tests, the transport's own
+// byte-for-byte delivery of the payload, not the preamble's parsing. It
+// deliberately does not Import-Module ActiveDirectory: that module is
+// Windows-only, and none of the properties under test here need it.
 //
 // It is a constant, and every value it handles arrives as JSON on stdin — the
 // same rule the library imposes on itself.

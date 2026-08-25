@@ -123,7 +123,7 @@ func parseArgs(args []string, getenv func(string) string, now time.Time) (*confi
 	exportedAt := fs.String("exported-at", "",
 		"provenance timestamp, RFC 3339; defaults to now. make schema-check passes the committed catalog's own value, so an unchanged schema diffs clean")
 	timeout := fs.Duration("timeout", 5*time.Minute, "ceiling on the fetch")
-	pwshPath := fs.String("pwsh-path", "", `PowerShell 7 executable on the Windows host (default "pwsh")`)
+	pwshPath := fs.String("pwsh-path", "", `PowerShell executable on the Windows host -- PowerShell 7 (pwsh) or Windows PowerShell 5.1 (powershell.exe); the exporter's script runs on either (default "pwsh")`)
 
 	adUsername := fs.String("ad-username", "", "user the AD cmdlets run as; omit to use the session's own identity")
 	adPasswordEnv := fs.String("ad-password-env", "", "name of the environment variable holding that user's password; a password in argv is visible in the process list")

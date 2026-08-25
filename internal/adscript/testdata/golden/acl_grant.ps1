@@ -1,7 +1,53 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 Import-Module ActiveDirectory -ErrorAction Stop
-$p = [Console]::In.ReadToEnd() | ConvertFrom-Json -AsHashtable
+# JSON parsing's hashtable-output switch (see below) needs PowerShell 6+, and
+# operations splat the payload (New-ADOrganizationalUnit @c), which a
+# PSCustomObject cannot do. So the object graph 5.1 returns is converted to
+# hashtables here.
+function ConvertTo-AdHashtable($o) {
+    if ($null -eq $o) { return $null }
+    # Scalars first. In Windows PowerShell a string satisfies -is [PSCustomObject]
+    # (the accelerator resolves to PSObject, which wraps everything), so without
+    # this a string would be walked as an object and become a hashtable of its
+    # members.
+    if ($o -is [string] -or $o -is [System.ValueType]) { return $o }
+    if ($o -is [System.Collections.IDictionary]) {
+        $h = @{}
+        foreach ($k in $o.Keys) { $h[$k] = ConvertTo-AdHashtable $o[$k] }
+        return $h
+    }
+    if ($o -is [object[]]) {
+        # Membership payloads carry thousands of distinguished names; an
+        # all-scalar array needs no walk at all.
+        $needsWalk = $false
+        foreach ($item in $o) {
+            if (-not ($null -eq $item -or $item -is [string] -or $item -is [System.ValueType])) {
+                $needsWalk = $true
+                break
+            }
+        }
+        if (-not $needsWalk) { return $o }
+        return @($o | ForEach-Object { ConvertTo-AdHashtable $_ })
+    }
+    if ($o -is [System.Management.Automation.PSCustomObject]) {
+        $h = @{}
+        foreach ($pr in $o.PSObject.Properties) { $h[$pr.Name] = ConvertTo-AdHashtable $pr.Value }
+        return $h
+    }
+    return $o
+}
+
+# Get-AdPropValue stands in for null-conditional property access, which is
+# PowerShell 7 only.
+function Get-AdPropValue($obj, $name) {
+    if ($null -eq $obj) { return $null }
+    $pr = $obj.PSObject.Properties[$name]
+    if ($pr) { return $pr.Value }
+    return $null
+}
+
+$p = ConvertTo-AdHashtable ([Console]::In.ReadToEnd() | ConvertFrom-Json)
 
 $common = @{}
 if ($p.server) { $common['Server'] = $p.server }
@@ -143,7 +189,7 @@ function Test-AdPresence($id) {
         return [ordered]@{
             found     = $false
             type      = $_.Exception.GetType().FullName
-            errorCode = $_.Exception.PSObject.Properties['ErrorCode']?.Value
+            errorCode = (Get-AdPropValue $_.Exception 'ErrorCode')
             message   = $_.Exception.Message
         }
     }
@@ -194,8 +240,8 @@ try {
         category           = $_.CategoryInfo.Category.ToString()
         targetName         = $_.CategoryInfo.TargetName
         fqid               = $_.FullyQualifiedErrorId
-        errorCode          = $_.Exception.PSObject.Properties['ErrorCode']?.Value
-        serverErrorMessage = $_.Exception.PSObject.Properties['ServerErrorMessage']?.Value
+        errorCode          = (Get-AdPropValue $_.Exception 'ErrorCode')
+        serverErrorMessage = (Get-AdPropValue $_.Exception 'ServerErrorMessage')
     } }
 }
 Write-Output '<<<TFAD:BEGIN>>>'
