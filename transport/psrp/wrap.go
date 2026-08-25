@@ -1,6 +1,7 @@
 package psrp
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -83,6 +84,10 @@ func exitCode(hadErrors bool) int {
 // own timeout, or from inside go-psrp's HTTP client, while the caller's
 // context is still alive — there, the Kind returned here is the only thing
 // standing between one execution and up to Retry.MaxAttempts of them.
+//
+// This Kind answers only "is it safe to retry?" (no, for a context error).
+// It deliberately does not answer "is the shell dead?" — see
+// isCallerTimeout, which Run consults separately for that second question.
 func mapExecuteError(err error) error {
 	switch {
 	case errors.Is(err, psrp.ErrQueueFull),
@@ -92,6 +97,27 @@ func mapExecuteError(err error) error {
 	default:
 		return &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
 	}
+}
+
+// isCallerTimeout reports whether err is a context cancellation or deadline,
+// unwrapped to any depth. mapExecuteError already answers whether this is
+// safe to retry (no); this answers the second, independent question Run
+// asks of a failed Execute: does it mean the shell is dead? It does not. A
+// context error says only that the caller (or an ancestor context) stopped
+// waiting — it carries no information about whether the shell that was
+// mid-request is still alive. The shell is, if anything, probably still
+// good: the caller gave up, the server did not refuse anything.
+//
+// This distinction has a real cost if ignored, not just a theoretical one.
+// Treating a context error as evidence of a dead shell would invalidate a
+// conn that is probably fine, undoing the shell-leak fix Config.IdleTimeout
+// exists for: the discarded client is never closed by this package, only
+// left to expire on its own lease (Config.IdleTimeout, 2 minutes by
+// default), and its replacement pays the cost this package works hard to
+// avoid paying twice — reimporting the AD module (roughly 366ms) on first
+// use. A timeout is not rare enough for that to be a rounding error.
+func isCallerTimeout(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // deadShellRetryExhaustedMessage is startPipeline's own literal (client.go,

@@ -192,14 +192,16 @@ func TestBuildPSRPConfigLeavesGoPSRPRetryMachineryOff(t *testing.T) {
 // rebuild the conn or retry — the shell is fine, and the caller (or
 // core.exec, one layer up) will simply try again later.
 //
-// This must NOT use a context error as its fixture: a context deadline or
-// cancellation is exactly the condition mapExecuteError refuses to treat as
-// transient, because in the WSMan backend a deadline can fire after the
-// script already reached the server (see wrap.go's mapExecuteError doc).
-// TestRunSurfacesContextErrorAsTransportAndDoesNotRetry below covers that
-// case, where the conn IS rebuilt (out of caution — its state is genuinely
-// unknown) but the isDeadShellFailure-gated retry still correctly refuses to
-// fire.
+// This deliberately does NOT use a context error as its fixture, even
+// though a context error also does not invalidate the conn (see
+// TestRunContextErrorDoesNotInvalidateOrRetry below). context.Canceled and
+// context.DeadlineExceeded map to KindTransport, not KindTransient (see
+// wrap.go's mapExecuteError) — a context-error fixture here would assert the
+// wrong Kind. The two "conn left alone" outcomes reach the same conclusion
+// for different reasons — one because nothing was ever attempted, the other
+// because Run treats a shell of unknown-but-probably-fine status as not
+// worth discarding (isCallerTimeout) — so they stay two tests rather than
+// one that would misstate either reason.
 func TestRunTransientFailureDoesNotInvalidateConn(t *testing.T) {
 	f := &fakeExec{execErr: psrp.ErrQueueFull}
 	built := 0
@@ -227,18 +229,23 @@ func TestRunTransientFailureDoesNotInvalidateConn(t *testing.T) {
 	}
 }
 
-// TestRunSurfacesContextErrorAsTransportAndDoesNotRetry pins the psrp-level
-// half of the retry-safety fix: a context deadline or cancellation from
-// Execute is not one of the three provably-pre-send sentinels, so
-// mapExecuteError now classifies it KindTransport (see wrap.go), not
-// KindTransient. Run therefore does not take the early "shell is fine"
-// return; it conservatively rebuilds the conn, exactly as it would for any
-// other transport-class failure — but the retry gate below that
-// (isDeadShellFailure) still correctly refuses to fire, because a bare
-// context error is not one of its confirmed dead-shell signatures. Net
-// effect: the operation is surfaced once, never re-issued — which is the
-// entire point of the fix this test guards.
-func TestRunSurfacesContextErrorAsTransportAndDoesNotRetry(t *testing.T) {
+// TestRunContextErrorDoesNotInvalidateOrRetry pins the follow-up refinement
+// to the retry-safety fix: a context deadline or cancellation from Execute
+// is not one of the three provably-pre-send sentinels, so mapExecuteError
+// classifies it KindTransport (see wrap.go) and core.exec will never retry
+// it — but that answers only "is it safe to retry?", not "is the shell
+// dead?". isCallerTimeout answers the second question separately, and Run
+// must NOT invalidate the conn here: the caller gave up, the shell is
+// probably still fine, and discarding a good client on every timeout would
+// leak it for up to Config.IdleTimeout (the abandoned client is never
+// closed by this package, only left to expire on its own lease) — undoing
+// the shell-leak fix and charging the next Run on this conn a fresh
+// AD-module import (~366ms) it didn't need to pay.
+//
+// An earlier version of this test asserted the conn WAS rebuilt on a
+// context error. That was the bug this refinement closes — do not revert
+// the "built == 0" assertion below back to expecting a rebuild.
+func TestRunContextErrorDoesNotInvalidateOrRetry(t *testing.T) {
 	for _, ctxErr := range []error{context.DeadlineExceeded, context.Canceled} {
 		f := &fakeExec{execErr: ctxErr}
 		built := 0
@@ -257,6 +264,9 @@ func TestRunSurfacesContextErrorAsTransportAndDoesNotRetry(t *testing.T) {
 		var e *adpwsh.Error
 		if !errors.As(err, &e) || e.Kind != adpwsh.KindTransport {
 			t.Fatalf("%v: want KindTransport, got %v", ctxErr, err)
+		}
+		if built != 0 {
+			t.Errorf("%v: build calls = %d, want 0 (a context error must not be treated as evidence the shell is dead)", ctxErr, built)
 		}
 		if f.calls != 1 {
 			t.Errorf("%v: Execute calls = %d, want 1 (a context error must never be retried, here or in core.exec)", ctxErr, f.calls)
