@@ -18,10 +18,11 @@ import (
 
 // Config configures the local PowerShell transport.
 type Config struct {
-	// PwshPath is the PowerShell 7 executable. New resolves it on PATH, so a
-	// missing or misspelled PowerShell is a configure-time error naming the
-	// path rather than a failure on the first resource operation. Defaults to
-	// "pwsh".
+	// PwshPath is the PowerShell executable -- PowerShell 7 (pwsh) or Windows
+	// PowerShell 5.1 (powershell.exe); the scripts run on either. New resolves
+	// it on PATH, so a missing or misspelled PowerShell is a configure-time
+	// error naming the path rather than a failure on the first resource
+	// operation. Defaults to "pwsh".
 	PwshPath string
 
 	// Concurrency bounds simultaneous pwsh processes, as transport/ssh bounds

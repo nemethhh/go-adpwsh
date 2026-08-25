@@ -17,6 +17,7 @@ func TestScriptsAvoidPowerShell7Constructs(t *testing.T) {
 	}{
 		{"null-conditional access (?. or ?[)", regexp.MustCompile(`\?\.|\?\[`)},
 		{"null-coalescing (??)", regexp.MustCompile(`\?\?`)},
+		{"ternary (cond ? a : b)", regexp.MustCompile(`\s\?\s`)},
 		{"ConvertFrom-Json -AsHashtable", regexp.MustCompile(`(?i)ConvertFrom-Json[^\n]*-AsHashtable`)},
 		{"ForEach-Object -Parallel", regexp.MustCompile(`(?i)-Parallel\b`)},
 		{"PowerShell class declaration", regexp.MustCompile(`(?m)^\s*class\s+\w`)},

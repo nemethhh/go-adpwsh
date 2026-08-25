@@ -215,11 +215,26 @@ Both transports need the same things of the Windows machine that runs `pwsh`:
 
 - A Windows **member server** — not a domain controller.
 - `RSAT-AD-PowerShell` installed.
-- PowerShell 7 (`pwsh`) on `PATH`. The scripts use `ConvertFrom-Json
-  -AsHashtable` and the `?.` null-conditional operator, neither of which exists
-  in Windows PowerShell 5.1.
+- PowerShell 7 (`pwsh`) **or** Windows PowerShell 5.1 (`powershell.exe`) on
+  `PATH`. The scripts no longer use anything 6+ only — no `ConvertFrom-Json
+  -AsHashtable`, no `?.` null-conditional operator — so 5.1 is a supported
+  engine, not a fallback.
 - TCP 9389 open to the domain controller — the AD Web Services port the cmdlets
   use.
+
+5.1 support is proven, but not uniformly across transports. It is verified over
+`transport/psrp`: 34 acceptance-suite runs against a live domain (ten batches,
+logged batch by batch in the consuming provider's `LAB.md`), including
+non-ASCII input in the hostile-input batch, all on Windows PowerShell 5.1.
+`transport/local` and
+`transport/ssh` deliver the payload by writing raw UTF-8 to the process's
+stdin, which the script reads with `[Console]::In.ReadToEnd()`; `pwsh` defaults
+that stream to UTF-8, but `powershell.exe` reads it through the console code
+page instead. Non-ASCII payloads over `local`/`ssh` on 5.1 are therefore
+**unverified** — say so rather than claiming 5.1 works identically everywhere.
+This is not fixed by setting `[Console]::InputEncoding` in the preamble: that
+rebuilds `Console.In` from the real stdin handle, which would break `psrp`'s
+payload delivery, since it does not deliver input that way.
 
 `transport/local` needs nothing further: the caller is already on that machine.
 
