@@ -44,6 +44,24 @@ func TestWithDefaultsIdleTimeoutExplicit(t *testing.T) {
 	}
 }
 
+// TestWithDefaultsIdleTimeoutFloor: a sub-second positive value is raised to
+// the 1-second floor rather than surviving to buildPSRPConfig, where
+// int(d.Seconds()) would truncate anything under a second to 0 and emit
+// "PT0S" — a lease the server could reap the shell under instantly, exactly
+// the failure this field exists to prevent. The zero value is unaffected and
+// still yields the 2-minute default (TestWithDefaults covers that case).
+func TestWithDefaultsIdleTimeoutFloor(t *testing.T) {
+	got := Config{Host: "dc.corp.local", IdleTimeout: 500 * time.Millisecond}.WithDefaults()
+	if got.IdleTimeout != time.Second {
+		t.Errorf("IdleTimeout = %s, want 1s (floored)", got.IdleTimeout)
+	}
+
+	pc := buildPSRPConfig(got)
+	if pc.IdleTimeout != "PT1S" {
+		t.Errorf("go-psrp IdleTimeout = %q, want PT1S (non-zero lease)", pc.IdleTimeout)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	if err := (Config{Host: "dc"}).Validate(); err != nil {
 		t.Errorf("valid config errored: %v", err)

@@ -70,7 +70,7 @@ var _ adpwsh.Transport = (*Transport)(nil)
 // split out from newClient — which only returns the executor interface,
 // hiding the concrete config — so a test can inspect exactly what gets sent
 // over the wire, in particular the IdleTimeout translation below.
-func buildPSRPConfig(cfg Config) *psrp.Config {
+func buildPSRPConfig(cfg Config) psrp.Config {
 	pc := psrp.DefaultConfig()
 	pc.Port = cfg.Port
 	pc.UseTLS = cfg.UseTLS
@@ -93,14 +93,14 @@ func buildPSRPConfig(cfg Config) *psrp.Config {
 	// ISO8601 and matches what a live shell reports back (e.g. PT1800.000S
 	// for the 30-minute default we are overriding).
 	pc.IdleTimeout = fmt.Sprintf("PT%dS", int(cfg.IdleTimeout.Seconds()))
-	return &pc
+	return pc
 }
 
 // newClient builds one go-psrp client with a single runspace. Concurrency comes
 // from the pool of clients, never from MaxRunspaces (which would race on SetIn).
 func newClient(cfg Config) (executor, error) {
 	pc := buildPSRPConfig(cfg)
-	return psrp.New(cfg.Host, *pc)
+	return psrp.New(cfg.Host, pc)
 }
 
 // New validates the configuration, then builds the client pool. It does not
