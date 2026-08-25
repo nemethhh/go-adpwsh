@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
@@ -27,6 +28,12 @@ type conn struct {
 	exec  executor
 	mu    sync.Mutex
 	up    bool
+	// lastUsed is stamped by Run when it returns this conn to the idle pool
+	// (success or failure — either way, this conn was just held and acted
+	// on). The idle-shell reaper (reapIdle) reads it to decide whether a
+	// conn resting in the pool has gone unused long enough to release its
+	// shell; see Config.ReapAfter and Transport.reapLoop.
+	lastUsed time.Time
 }
 
 func (c *conn) ensureConnected(ctx context.Context) error {
@@ -88,6 +95,16 @@ type Transport struct {
 
 	closeOnce sync.Once
 	closeErr  error
+
+	// reapStop/reapDone bracket the lifetime of the one background goroutine
+	// this Transport runs (reapLoop, in reap.go): Close closes reapStop to
+	// ask it to exit, then blocks on reapDone until it actually has. Both
+	// are nil on a Transport built directly by a test that bypasses New (as
+	// several fake-backed suites in this package do) — Close guards against
+	// that so it stays callable there too, consistent with Close already
+	// being a safe no-op when there is nothing to do.
+	reapStop chan struct{}
+	reapDone chan struct{}
 }
 
 var _ adpwsh.Transport = (*Transport)(nil)
@@ -138,7 +155,12 @@ func New(cfg Config) (*Transport, error) {
 		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "psrp.New", Err: err}
 	}
 	cfg = cfg.WithDefaults()
-	t := &Transport{cfg: cfg, idle: make(chan *conn, cfg.Concurrency)}
+	t := &Transport{
+		cfg:      cfg,
+		idle:     make(chan *conn, cfg.Concurrency),
+		reapStop: make(chan struct{}),
+		reapDone: make(chan struct{}),
+	}
 	// One build closure shared by every pooled conn: same cfg each time, so
 	// invalidate can rebuild a conn's client without the Transport needing to
 	// hold onto anything beyond cfg itself.
@@ -150,6 +172,11 @@ func New(cfg Config) (*Transport, error) {
 		}
 		t.idle <- &conn{exec: c, build: build}
 	}
+	// The pool's only background activity: it releases shells this package
+	// opened but that nothing else ever tears down (see reap.go). Started
+	// only once every conn is already sitting in t.idle, so it can never
+	// race the population loop above.
+	go t.reapLoop()
 	return t, nil
 }
 
@@ -175,7 +202,19 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 	var c *conn
 	select {
 	case c = <-t.idle:
-		defer func() { t.idle <- c }()
+		// Stamped on the way back in, not at checkout, and unconditionally
+		// (success or failure): the reaper's idle clock should measure time
+		// since this conn was last actually acted on, not time since it was
+		// last handed out — a Run in flight is never "idle" in the sense the
+		// reaper cares about, but it also holds no lock on lastUsed while
+		// running, so there is nothing for the reaper to race here (it can't
+		// see this conn at all until this defer returns it to t.idle).
+		defer func() {
+			c.mu.Lock()
+			c.lastUsed = time.Now()
+			c.mu.Unlock()
+			t.idle <- c
+		}()
 	case <-ctx.Done():
 		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransient, Op: "Run", Err: ctx.Err()}
 	}
@@ -252,12 +291,39 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 	return runOnce(ctx, c, wrapped)
 }
 
-// Close implements adpwsh.Transport. It drains and closes every pooled client;
-// it assumes no Run is in flight (the provider closes at shutdown). Close is
-// idempotent: a repeated call is a safe no-op returning the first call's
-// result, rather than blocking forever on an already-drained idle channel.
+// Close implements adpwsh.Transport. It stops the background reaper, then
+// drains and closes every pooled client; it assumes no Run is in flight (the
+// provider closes at shutdown). Close is idempotent: a repeated call is a
+// safe no-op returning the first call's result, rather than blocking forever
+// on an already-drained idle channel.
 func (t *Transport) Close() error {
 	t.closeOnce.Do(func() {
+		if t.reapStop != nil {
+			// Stop the reaper and wait for it to actually be gone *before*
+			// touching t.idle at all — this is what makes Close safe against
+			// a sweep still in flight, and it is a bounded wait, not a race,
+			// for two reasons. First, it terminates: reapLoop's outer loop
+			// blocks only in its select on ticker.C/reapStop, never inside
+			// reapIdle itself (every receive from t.idle there is
+			// non-blocking; see reapIdle's own comment) — so the one thing
+			// that can delay the goroutine noticing the closed reapStop is a
+			// sweep already in progress, and that sweep is bounded by
+			// however long its in-flight conn.exec.Close(ctx) calls take,
+			// each itself bounded by cfg.Timeout. Second, it is necessary:
+			// without it, this drain loop below (a fixed Concurrency
+			// receives) could interleave with the reaper's own receives from
+			// the same channel. Channel semantics mean a given *conn always
+			// goes to exactly one of them — never a double-close of one
+			// conn's exec — but the drain loop could still finish having
+			// permanently removed fewer than Concurrency live conns (one was
+			// mid-sweep, about to be returned to a channel this loop has
+			// already stopped reading), silently under-closing the pool.
+			// Waiting for reapDone guarantees every conn the reaper ever
+			// took is back in t.idle before the drain below reads a single
+			// one.
+			close(t.reapStop)
+			<-t.reapDone
+		}
 		var firstErr error
 		for i := 0; i < t.cfg.Concurrency; i++ {
 			c := <-t.idle

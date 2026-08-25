@@ -17,6 +17,8 @@ type fakeExec struct {
 	mu           sync.Mutex
 	calls        int
 	connectCalls int
+	closeCalls   int
+	closeErr     error
 	lastScript   string
 	result       *psrp.Result
 	execErr      error
@@ -33,7 +35,13 @@ func (f *fakeExec) Connect(context.Context) error {
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeExec) Close(context.Context) error { return nil }
+func (f *fakeExec) Close(context.Context) error {
+	f.mu.Lock()
+	f.closeCalls++
+	err := f.closeErr
+	f.mu.Unlock()
+	return err
+}
 func (f *fakeExec) Execute(_ context.Context, s string) (*psrp.Result, error) {
 	f.mu.Lock()
 	f.calls++

@@ -25,6 +25,9 @@ func TestWithDefaults(t *testing.T) {
 	if got.IdleTimeout != 2*time.Minute {
 		t.Errorf("IdleTimeout = %s, want 2m", got.IdleTimeout)
 	}
+	if got.ReapAfter != 30*time.Second {
+		t.Errorf("ReapAfter = %s, want 30s", got.ReapAfter)
+	}
 }
 
 func TestWithDefaultsTLSPort(t *testing.T) {
@@ -62,6 +65,16 @@ func TestWithDefaultsIdleTimeoutFloor(t *testing.T) {
 	}
 }
 
+// TestWithDefaultsReapAfterExplicit: an explicit ReapAfter survives
+// WithDefaults unchanged, mirroring IdleTimeout's "zero means default"
+// convention.
+func TestWithDefaultsReapAfterExplicit(t *testing.T) {
+	got := Config{Host: "dc.corp.local", ReapAfter: 5 * time.Minute}.WithDefaults()
+	if got.ReapAfter != 5*time.Minute {
+		t.Errorf("ReapAfter = %s, want 5m", got.ReapAfter)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	if err := (Config{Host: "dc"}).Validate(); err != nil {
 		t.Errorf("valid config errored: %v", err)
@@ -77,5 +90,8 @@ func TestValidate(t *testing.T) {
 	}
 	if err := (Config{Host: "dc", IdleTimeout: -1}).Validate(); err == nil {
 		t.Error("negative idle timeout: want error, got nil")
+	}
+	if err := (Config{Host: "dc", ReapAfter: -1}).Validate(); err == nil {
+		t.Error("negative reap after: want error, got nil")
 	}
 }
