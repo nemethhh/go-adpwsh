@@ -95,6 +95,13 @@ func mapExecuteError(err error) error {
 		errors.Is(err, psrp.ErrNotConnected):
 		return &adpwsh.Error{Kind: adpwsh.KindTransient, Op: "Run", Err: err}
 	default:
+		// Known false negative, accepted deliberately: a timeout while queued
+		// for a concurrency slot ("pool busy: context deadline exceeded")
+		// provably never reached the network, so it would be safe to retry.
+		// It lands here anyway, because the only thing distinguishing it from a
+		// timeout awaiting a response is text we would have to match, and the
+		// cost of guessing wrong is a duplicated write. Failing closed on a
+		// retryable case loses one retry; failing open loses data.
 		return &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
 	}
 }
