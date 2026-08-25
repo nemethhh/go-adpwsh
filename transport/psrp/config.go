@@ -35,6 +35,18 @@ type Config struct {
 	// value so the lease can never be so short the shell gets reaped out from
 	// under a live pool.
 	IdleTimeout time.Duration
+	// ReapAfter is how long a pooled conn may sit idle in the pool — checked
+	// in but unused by any Run — before the background reaper (see
+	// Transport.reapLoop in psrp.go) closes its shell and rebuilds the
+	// client, so the next Run through that conn reconnects fresh. This is
+	// what actually releases a shell server-side; IdleTimeout only bounds how
+	// long a shell nobody reaps stays alive, in case the reaper is somehow
+	// never given the chance to run. Zero means "use the default", matching
+	// every other duration on this Config. Unlike IdleTimeout, ReapAfter is
+	// never serialized into an ISO8601 lease string, so there is no
+	// truncation-to-zero failure mode to floor against — Validate rejecting a
+	// negative value is the only guard this field needs.
+	ReapAfter time.Duration
 }
 
 func (c Config) WithDefaults() Config {
@@ -71,6 +83,14 @@ func (c Config) WithDefaults() Config {
 		// exists to prevent.
 		c.IdleTimeout = time.Second
 	}
+	if c.ReapAfter <= 0 {
+		// Bursty Terraform runs (configure, a burst of operations, then idle
+		// until the process exits) mean a reaper firing this often almost
+		// always still catches the process alive, turning shell cleanup into
+		// something this package initiates rather than something discovered
+		// later as a corpse on the server.
+		c.ReapAfter = 30 * time.Second
+	}
 	return c
 }
 
@@ -92,6 +112,9 @@ func (c Config) Validate() error {
 	}
 	if c.IdleTimeout < 0 {
 		return fmt.Errorf("psrp: idle timeout must not be negative (got %s)", c.IdleTimeout)
+	}
+	if c.ReapAfter < 0 {
+		return fmt.Errorf("psrp: reap after must not be negative (got %s)", c.ReapAfter)
 	}
 	return nil
 }
