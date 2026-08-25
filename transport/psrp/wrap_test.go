@@ -68,3 +68,32 @@ func TestMapExecuteError(t *testing.T) {
 		t.Error("unknown should map to KindTransport")
 	}
 }
+
+// TestIsDeadShellFailure pins the exact boundary Run uses to decide whether a
+// KindTransport Execute failure is safe to retry: strictly the errors
+// go-psrp's startPipeline returns before a pipeline is ever invoked. Anything
+// from after a successful Invoke (e.g. an output-stream failure) — or any
+// error this transport does not specifically recognize — must come back
+// false, per mapExecuteError's own "do not retry what you cannot prove is
+// pre-execution" rule.
+func TestIsDeadShellFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"retry-exhausted (the exact lab failure)", errors.New("failed to start pipeline after retries due to transport error"), true},
+		{"create pipeline", errors.New("create pipeline: pool is broken"), true},
+		{"get create pipeline data", errors.New("get create pipeline data: serialize: boom"), true},
+		{"prepare pipeline", errors.New("prepare pipeline: dial tcp: connection refused"), true},
+		{"invoke pipeline (ambiguous, excluded on purpose)", errors.New("invoke pipeline: dial tcp: connection refused"), false},
+		{"post-invoke stream failure", errors.New("read output stream: unexpected EOF"), false},
+		{"unrelated transport error", errors.New("dial tcp: connection refused"), false},
+	}
+	for _, tc := range cases {
+		if got := isDeadShellFailure(tc.err); got != tc.want {
+			t.Errorf("%s: isDeadShellFailure = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

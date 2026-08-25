@@ -46,12 +46,22 @@ func (f *fakeExec) Execute(_ context.Context, s string) (*psrp.Result, error) {
 }
 
 // newTestTransport builds a pool from the given fakes (already "connected").
+// Each conn gets a default build closure that hands back a fresh, healthy
+// fakeExec if invalidate ever rebuilds it — tests that care about exactly
+// what gets rebuilt construct their own conn (and their own build) directly,
+// as the retry/invalidate tests below do.
 func newTestTransport(fakes ...*fakeExec) *Transport {
 	cfg := Config{Host: "dc"}.WithDefaults()
 	cfg.Concurrency = len(fakes)
 	t := &Transport{cfg: cfg, idle: make(chan *conn, len(fakes))}
 	for _, f := range fakes {
-		t.idle <- &conn{exec: f, up: true}
+		t.idle <- &conn{
+			exec: f,
+			up:   true,
+			build: func() (executor, error) {
+				return &fakeExec{result: &psrp.Result{}}, nil
+			},
+		}
 	}
 	return t
 }
@@ -157,61 +167,145 @@ func TestBuildPSRPConfigIdleTimeoutExplicit(t *testing.T) {
 	}
 }
 
-// TestRunTransportFailureInvalidatesConn: a transport-class Execute failure
-// (KindTransport — dial/auth/protocol, not a busy queue or a deadline) means
-// the shell itself is suspect, so the conn must be marked not-connected. The
-// next Run through it reconnects instead of reusing a dead shell — without
-// this, every later Run on that pooled conn would fail for the life of the
-// process (finding 3 in the leak analysis).
-func TestRunTransportFailureInvalidatesConn(t *testing.T) {
-	f := &fakeExec{execErr: errors.New("dial tcp: connection refused")}
-	tr := &Transport{cfg: Config{Host: "dc"}.WithDefaults(), idle: make(chan *conn, 1)}
-	tr.idle <- &conn{exec: f} // up defaults false, same as a freshly built pool
-
-	if _, err := tr.Run(context.Background(), encode("x"), nil); err == nil {
-		t.Fatal("first Run: want error, got nil")
-	}
-	if f.connectCalls != 1 {
-		t.Fatalf("connectCalls after first Run = %d, want 1", f.connectCalls)
-	}
-
-	f.mu.Lock()
-	f.execErr = nil
-	f.result = &psrp.Result{}
-	f.mu.Unlock()
-
-	if _, err := tr.Run(context.Background(), encode("x"), nil); err != nil {
-		t.Fatalf("second Run: %v", err)
-	}
-	if f.connectCalls != 2 {
-		t.Errorf("connectCalls after second Run = %d, want 2 (dead shell should have been reconnected)", f.connectCalls)
-	}
-}
-
 // TestRunTransientFailureDoesNotInvalidateConn: a context deadline (or other
-// KindTransient condition) does not mean the shell is dead. Tearing down a
-// warm shell over one operation's deadline would be a performance regression
-// — the transport should reuse it, not reconnect.
+// KindTransient condition) does not mean the shell is dead. Run must not
+// rebuild the conn or retry — the shell is fine, and the caller asked to
+// stop.
 func TestRunTransientFailureDoesNotInvalidateConn(t *testing.T) {
 	f := &fakeExec{execErr: context.DeadlineExceeded}
+	built := 0
+	c := &conn{
+		exec: f,
+		up:   true, // already connected; a real warm shell
+		build: func() (executor, error) {
+			built++
+			return &fakeExec{result: &psrp.Result{}}, nil
+		},
+	}
 	tr := &Transport{cfg: Config{Host: "dc"}.WithDefaults(), idle: make(chan *conn, 1)}
-	tr.idle <- &conn{exec: f, up: true} // already connected; a real warm shell
+	tr.idle <- c
 
 	_, err := tr.Run(context.Background(), encode("x"), nil)
 	var e *adpwsh.Error
 	if !errors.As(err, &e) || e.Kind != adpwsh.KindTransient {
-		t.Fatalf("first Run: want KindTransient, got %v", err)
+		t.Fatalf("want KindTransient, got %v", err)
 	}
-
-	f.mu.Lock()
-	f.execErr = nil
-	f.result = &psrp.Result{}
-	f.mu.Unlock()
-
-	if _, err := tr.Run(context.Background(), encode("x"), nil); err != nil {
-		t.Fatalf("second Run: %v", err)
+	if built != 0 {
+		t.Errorf("build calls = %d, want 0 (a transient failure must not rebuild a good shell)", built)
 	}
-	if f.connectCalls != 0 {
-		t.Errorf("connectCalls = %d, want 0 (a transient failure must not invalidate a good shell)", f.connectCalls)
+	if f.calls != 1 {
+		t.Errorf("Execute calls = %d, want 1 (no retry for a transient failure)", f.calls)
+	}
+}
+
+// TestRunAmbiguousTransportFailureDoesNotRetry: a KindTransport failure that
+// is not one of the confirmed pipeline-start signatures (isDeadShellFailure)
+// must not be retried within this Run — the script may already have reached
+// Active Directory. The conn is still rebuilt so a LATER, unrelated Run does
+// not inherit a permanently poisoned client (the general fix for finding 3).
+func TestRunAmbiguousTransportFailureDoesNotRetry(t *testing.T) {
+	// "read output stream: unexpected EOF" models a failure surfacing after a
+	// pipeline was already invoked (e.g. pipeline.Wait(), reached only once
+	// the script may have started running) — not one of the pipeline-start
+	// prefixes this transport recognizes as safe to retry.
+	f := &fakeExec{execErr: errors.New("read output stream: unexpected EOF")}
+	built := 0
+	c := &conn{
+		exec: f,
+		up:   true,
+		build: func() (executor, error) {
+			built++
+			return &fakeExec{result: &psrp.Result{}}, nil
+		},
+	}
+	tr := &Transport{cfg: Config{Host: "dc"}.WithDefaults(), idle: make(chan *conn, 1)}
+	tr.idle <- c
+
+	_, err := tr.Run(context.Background(), encode("x"), nil)
+	var e *adpwsh.Error
+	if !errors.As(err, &e) || e.Kind != adpwsh.KindTransport {
+		t.Fatalf("want KindTransport surfaced, got %v", err)
+	}
+	if built != 1 {
+		t.Errorf("build calls = %d, want 1 (conn still fixed for next time)", built)
+	}
+	if f.calls != 1 {
+		t.Errorf("Execute calls = %d, want 1 (must not retry an ambiguous failure)", f.calls)
+	}
+}
+
+// TestRunRecoversFromDeadShellWithOneTransparentRetry is the core defect this
+// round closes. dead models exactly what the lab found: go-psrp's own Client
+// keeps believing it is connected after its shell is reaped — Connect
+// trivially succeeds (fakeExec.Connect always does), while Execute keeps
+// failing the way a dead pipeline-start does. Simply flagging the conn and
+// reconnecting the SAME object cannot recover from that (Connect on a client
+// that still thinks it's connected is a no-op) — Run must discard dead and
+// swap in a genuinely fresh client (alive) via conn.build, then retry the
+// same operation once, transparently, so the caller sees success.
+func TestRunRecoversFromDeadShellWithOneTransparentRetry(t *testing.T) {
+	dead := &fakeExec{execErr: errors.New("failed to start pipeline after retries due to transport error")}
+	alive := &fakeExec{result: &psrp.Result{Output: []interface{}{"ok"}}}
+
+	built := 0
+	c := &conn{
+		exec: dead,
+		up:   true, // dead's underlying Client still believes itself connected
+		build: func() (executor, error) {
+			built++
+			return alive, nil
+		},
+	}
+	tr := &Transport{cfg: Config{Host: "dc"}.WithDefaults(), idle: make(chan *conn, 1)}
+	tr.idle <- c
+
+	res, err := tr.Run(context.Background(), encode("x"), nil)
+	if err != nil {
+		t.Fatalf("Run: %v, want transparent recovery", err)
+	}
+	if res.Stdout != "ok" {
+		t.Errorf("Stdout = %q, want %q (from the rebuilt client)", res.Stdout, "ok")
+	}
+	if built != 1 {
+		t.Errorf("build calls = %d, want exactly 1", built)
+	}
+	if dead.calls != 1 {
+		t.Errorf("dead.calls = %d, want 1 (must not retry the same dead client)", dead.calls)
+	}
+	if alive.calls != 1 {
+		t.Errorf("alive.calls = %d, want 1", alive.calls)
+	}
+	if alive.connectCalls != 1 {
+		t.Errorf("alive.connectCalls = %d, want 1 (the rebuilt client must actually connect)", alive.connectCalls)
+	}
+}
+
+// TestRunGivesUpAfterExactlyOneRetry: if the rebuilt client is also dead, Run
+// must surface the error rather than loop — the retry budget is exactly one,
+// never a retry-until-success loop.
+func TestRunGivesUpAfterExactlyOneRetry(t *testing.T) {
+	dead1 := &fakeExec{execErr: errors.New("failed to start pipeline after retries due to transport error")}
+	dead2 := &fakeExec{execErr: errors.New("failed to start pipeline after retries due to transport error")}
+
+	built := 0
+	c := &conn{
+		exec: dead1,
+		up:   true,
+		build: func() (executor, error) {
+			built++
+			return dead2, nil
+		},
+	}
+	tr := &Transport{cfg: Config{Host: "dc"}.WithDefaults(), idle: make(chan *conn, 1)}
+	tr.idle <- c
+
+	if _, err := tr.Run(context.Background(), encode("x"), nil); err == nil {
+		t.Fatal("want error: both the original and the rebuilt client are dead")
+	}
+	if built != 1 {
+		t.Errorf("build calls = %d, want exactly 1 (no retry loop)", built)
+	}
+	if dead1.calls != 1 || dead2.calls != 1 {
+		t.Errorf("dead1.calls=%d dead2.calls=%d, want 1 and 1 (exactly one retry, never a loop)", dead1.calls, dead2.calls)
 	}
 }

@@ -67,3 +67,44 @@ func mapExecuteError(err error) error {
 		return &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
 	}
 }
+
+// deadShellFailurePrefixes are the exact fmt.Errorf-wrapped messages go-psrp's
+// Client produces when a pipeline could not be *started* at all — i.e.
+// strictly before the script had any chance to run on the server. Sourced
+// from the vendored go-psrp (client/client.go's startPipeline): "create
+// pipeline", "get create pipeline data" and "prepare pipeline" all return
+// before psrpPipeline.Invoke is ever attempted, and the fourth string is
+// startPipeline's own message when every one of its 3 attempts fails before
+// a successful Invoke. Deliberately excludes "invoke pipeline: " and anything
+// surfacing from output streaming (pipeline.Wait, reached only after Invoke
+// succeeds): a failure there can mean the server already accepted and started
+// running the script, and retrying that risks re-running a write that already
+// reached Active Directory. Re-verify these strings against client.go on any
+// go-psrp version bump.
+var deadShellFailurePrefixes = []string{
+	"create pipeline: ",
+	"get create pipeline data: ",
+	"prepare pipeline: ",
+	"failed to start pipeline after retries due to transport error",
+}
+
+// isDeadShellFailure reports whether err is the class of failure produced
+// when the shell behind a pooled conn no longer exists — idle-timeout reaped,
+// or the host's WinRM service was restarted. go-psrp's own Client keeps
+// believing it is connected in this situation (nothing resets its internal
+// `connected` flag; see conn.invalidate in psrp.go), so every attempt to
+// start a pipeline in that dead shell fails before the script runs. Run
+// treats this, and only this, as safe to retry once against a freshly
+// rebuilt client.
+func isDeadShellFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, p := range deadShellFailurePrefixes {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
+}

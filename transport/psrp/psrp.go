@@ -23,9 +23,10 @@ type executor interface {
 // go-psrp client = separate wsmprovhost process = separate [Console], which is
 // what makes concurrent Runs safe (SetIn is process-global).
 type conn struct {
-	exec executor
-	mu   sync.Mutex
-	up   bool
+	build func() (executor, error) // rebuilds a fresh executor; see invalidate
+	exec  executor
+	mu    sync.Mutex
+	up    bool
 }
 
 func (c *conn) ensureConnected(ctx context.Context) error {
@@ -41,17 +42,39 @@ func (c *conn) ensureConnected(ctx context.Context) error {
 	return nil
 }
 
-// invalidate marks the conn as needing to reconnect. Call it only after a
-// transport-class Execute failure: a dead or reaped shell must not go on
-// reporting itself connected, or every later Run through this pooled conn
-// would fail for the life of the process. A transient failure (a busy queue,
-// a context deadline) means no such thing — the shell is still good — so
-// callers must not invalidate on that path; see mapExecuteError's
+// invalidate discards the dead client behind conn and replaces it with a
+// freshly built one, then marks the conn as needing to (re)connect. Call it
+// only after a transport-class Execute failure: a dead or reaped shell must
+// not go on reporting itself connected, or every later Run through this
+// pooled conn would fail for the life of the process. A transient failure (a
+// busy queue, a context deadline) means no such thing — the shell is still
+// good — so callers must not invalidate on that path; see mapExecuteError's
 // classification and its call site in Run.
+//
+// Simply flipping a local "connected" flag is not enough: go-psrp's own
+// Client tracks its own internal connected state, set only by a successful
+// Connect and cleared only by Disconnect or Close (verified against
+// client/client.go) — nothing in a failed Execute call resets it, so the same
+// Client object would go on reporting itself connected forever even though
+// its shell is gone, and a later Connect on it is a silent no-op. Close is
+// not a fix either: it permanently sets the client's internal closed flag,
+// which then makes any future Connect on that same object fail outright
+// ("client is closed") — verified against client/client.go's
+// CloseWithStrategy and connectInternal. Recovery therefore has to build a
+// brand-new client, not Close-then-Connect the old one. The dead client's
+// shell is already gone server-side, so there is nothing left to gracefully
+// close; the old client is simply dropped (psrp.New does no network I/O, so
+// building its replacement here is cheap).
 func (c *conn) invalidate() {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if fresh, err := c.build(); err == nil {
+		c.exec = fresh
+	}
+	// If build itself fails, keep the old (dead) exec: ensureConnected will
+	// try it again and Execute will fail the same way, surfacing a clear
+	// error rather than leaving the conn in a half-built state.
 	c.up = false
-	c.mu.Unlock()
 }
 
 // Transport runs go-adpwsh commands over PSRP/WinRM via a checkout pool of
@@ -113,14 +136,35 @@ func New(cfg Config) (*Transport, error) {
 	}
 	cfg = cfg.WithDefaults()
 	t := &Transport{cfg: cfg, idle: make(chan *conn, cfg.Concurrency)}
+	// One build closure shared by every pooled conn: same cfg each time, so
+	// invalidate can rebuild a conn's client without the Transport needing to
+	// hold onto anything beyond cfg itself.
+	build := func() (executor, error) { return newClient(cfg) }
 	for i := 0; i < cfg.Concurrency; i++ {
-		c, err := newClient(cfg)
+		c, err := build()
 		if err != nil {
 			return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "psrp.New", Err: err}
 		}
-		t.idle <- &conn{exec: c}
+		t.idle <- &conn{exec: c, build: build}
 	}
 	return t, nil
+}
+
+// runOnce connects conn c if needed and executes one already-wrapped script,
+// classifying any Execute failure through mapExecuteError.
+func runOnce(ctx context.Context, c *conn, wrapped string) (adpwsh.Result, error) {
+	if err := c.ensureConnected(ctx); err != nil {
+		return adpwsh.Result{}, err
+	}
+	res, err := c.exec.Execute(ctx, wrapped)
+	if err != nil {
+		return adpwsh.Result{}, mapExecuteError(err)
+	}
+	return adpwsh.Result{
+		Stdout:   joinObjects(res.Output),
+		Stderr:   joinObjects(res.Errors),
+		ExitCode: exitCode(res.HadErrors),
+	}, nil
 }
 
 // Run implements adpwsh.Transport.
@@ -133,34 +177,60 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransient, Op: "Run", Err: ctx.Err()}
 	}
 
-	if err := c.ensureConnected(ctx); err != nil {
-		return adpwsh.Result{}, err
-	}
-
 	script, err := adscript.DecodeCommand(encodedCommand)
 	if err != nil {
 		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
 	}
+	wrapped := buildWrapper(script, payload)
 
-	res, err := c.exec.Execute(ctx, buildWrapper(script, payload))
-	if err != nil {
-		mapped := mapExecuteError(err)
-		var ae *adpwsh.Error
-		if errors.As(mapped, &ae) && ae.Kind != adpwsh.KindTransient {
-			// Not a busy queue or a deadline: the shell itself is suspect
-			// (dead, reaped, or the host restarted WinRM). Invalidate so the
-			// conn reconnects on its next checkout instead of reusing it —
-			// the checked-out conn goes back to the idle channel via the
-			// defer above, so another goroutine can pick it up right away.
-			c.invalidate()
-		}
+	// A plain Connect failure is deliberately not run through
+	// invalidate/retry below: ensureConnected already leaves c.up false on
+	// failure, so the next checkout retries Connect on this very client —
+	// go-psrp only short-circuits Connect when it already believes itself
+	// connected (see connectInternal), so a Connect failure never leaves a
+	// client stuck reporting false confidence the way a dead-shell Execute
+	// failure does. Nothing here needs rebuilding.
+	if err := c.ensureConnected(ctx); err != nil {
+		return adpwsh.Result{}, err
+	}
+
+	res, execErr := c.exec.Execute(ctx, wrapped)
+	if execErr == nil {
+		return adpwsh.Result{
+			Stdout:   joinObjects(res.Output),
+			Stderr:   joinObjects(res.Errors),
+			ExitCode: exitCode(res.HadErrors),
+		}, nil
+	}
+
+	mapped := mapExecuteError(execErr)
+	var ae *adpwsh.Error
+	if !errors.As(mapped, &ae) || ae.Kind == adpwsh.KindTransient {
+		// A busy queue or a context deadline: the shell is fine, and either
+		// the caller asked to stop or will simply try again later. Leave the
+		// conn exactly as it was — tearing down a good shell here would be a
+		// performance regression, not a fix.
 		return adpwsh.Result{}, mapped
 	}
-	return adpwsh.Result{
-		Stdout:   joinObjects(res.Output),
-		Stderr:   joinObjects(res.Errors),
-		ExitCode: exitCode(res.HadErrors),
-	}, nil
+
+	// Anything else means the shell itself is suspect (dead, reaped, or the
+	// host restarted WinRM). Rebuild the conn unconditionally so a LATER,
+	// unrelated Run never inherits a permanently poisoned client — this must
+	// happen even for a failure class we choose not to retry below.
+	c.invalidate()
+
+	if !isDeadShellFailure(execErr) {
+		// Not confirmed to be a pipeline-start failure (see
+		// isDeadShellFailure): the script may already have reached Active
+		// Directory, so retrying this specific operation is not safe. The
+		// conn is already fixed for whatever the caller tries next.
+		return adpwsh.Result{}, mapped
+	}
+
+	// Exactly one retry, against the freshly rebuilt conn. Safe because
+	// isDeadShellFailure only matches failures confirmed (from go-psrp's
+	// source) to occur before the script had any chance to reach the server.
+	return runOnce(ctx, c, wrapped)
 }
 
 // Close implements adpwsh.Transport. It drains and closes every pooled client;
