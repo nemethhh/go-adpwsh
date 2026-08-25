@@ -125,15 +125,21 @@ const preparePipelineWrapMarker = "prepare pipeline: "
 //     produces an indistinguishable fault. Retrying that resends the script
 //     after the original may already have completed its AD write.
 //
-//     So the fault only counts alongside preparePipelineWrapMarker being
-//     present in the error text — the one thing that path adds and the
+//     So the fault only counts alongside preparePipelineWrapMarker being a
+//     PREFIX of the error text — the one thing that path adds and the
 //     Receive path never does (it wraps with "read fragment header: ",
 //     "wsman receive: ", "receive: " instead). errors.As still reaches the
 //     fault through arbitrary wrapping depth (startPipeline's
 //     "prepare pipeline: " -> PreparePipeline's "create wsman command: " ->
 //     Command's "create command: " -> sendEnvelope's "wsman: %w"; see
 //     wsman/client.go, wsman/errors.go), but the marker check is what tells
-//     apart which call site produced it.
+//     apart which call site produced it. HasPrefix, not Contains: nothing
+//     wraps above startPipeline, so in the legitimate case the marker is
+//     always the outermost, first token of the string. Contains would also
+//     match server-supplied text — the fault's own Reason/Subcode from the
+//     DC — so a Receive-path fault whose message happened to contain the
+//     literal "prepare pipeline: " would forge the origin signal and defeat
+//     the whole point of requiring it.
 //
 //     This is deliberately a conjunction, not a fallback: if a future
 //     go-psrp version rewords either the fault's own text or this wrap
@@ -155,5 +161,5 @@ func isDeadShellFailure(err error) bool {
 	}
 	var fault *wsman.Fault
 	return errors.As(err, &fault) && fault.IsShellNotFound() &&
-		strings.Contains(err.Error(), preparePipelineWrapMarker)
+		strings.HasPrefix(err.Error(), preparePipelineWrapMarker)
 }

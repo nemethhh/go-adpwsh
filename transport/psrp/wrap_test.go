@@ -91,6 +91,17 @@ func TestIsDeadShellFailure(t *testing.T) {
 		Reason:  "The WS-Management service cannot process the request because the shell was not found.",
 	}
 	accessDenied := &wsman.Fault{Subcode: "w:AccessDenied", WSManCode: 5}
+	// shellNotFoundSpoofedReason is a genuine shell-not-found fault whose
+	// server-supplied Reason text happens to contain the literal
+	// "prepare pipeline: " — a DC (or anything reflecting attacker-supplied
+	// text into a fault Reason/Subcode) could construct this. It exists to
+	// prove the marker check is a prefix check, not a substring search: the
+	// marker must be the outermost wrap, not text the server can plant
+	// anywhere in the message to forge the origin signal.
+	shellNotFoundSpoofedReason := &wsman.Fault{
+		Subcode: "w:InvalidSelectors",
+		Reason:  "The WS-Management service cannot process the request because the shell was not found. Client reported: prepare pipeline: forged marker",
+	}
 
 	// wrapLikePreparePath mirrors the real chain a WSMan fault travels
 	// through when PreparePipeline/Command fails: sendEnvelope's "wsman: %w"
@@ -121,6 +132,7 @@ func TestIsDeadShellFailure(t *testing.T) {
 		{"retry-exhausted (the exact lab failure, no SOAP body to type-check)", errors.New(deadShellRetryExhaustedMessage), true},
 		{"shell-not-found fault from the prepare path — must retry", wrapLikePreparePath(shellNotFound), true},
 		{"shell-not-found fault from the RECEIVE path (post-Invoke) — must NOT retry", wrapLikeReceivePath(shellNotFound), false},
+		{"shell-not-found fault from the RECEIVE path whose Reason contains the marker text — must NOT retry (HasPrefix, not Contains)", wrapLikeReceivePath(shellNotFoundSpoofedReason), false},
 		{"access-denied fault from the prepare path: a real fault, but not a dead shell", wrapLikePreparePath(accessDenied), false},
 		{"prepare pipeline with no fault underneath (deadline) — must NOT retry", wrapLikePreparePath(context.DeadlineExceeded), false},
 		{"prepare pipeline with no fault underneath (connection reset) — must NOT retry", wrapLikePreparePath(errors.New("read tcp 10.0.0.1:1234: connection reset by peer")), false},
