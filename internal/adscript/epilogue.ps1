@@ -7,8 +7,8 @@
         category           = $_.CategoryInfo.Category.ToString()
         targetName         = $_.CategoryInfo.TargetName
         fqid               = $_.FullyQualifiedErrorId
-        errorCode          = $_.Exception.PSObject.Properties['ErrorCode']?.Value
-        serverErrorMessage = $_.Exception.PSObject.Properties['ServerErrorMessage']?.Value
+        errorCode          = (Get-AdPropValue $_.Exception 'ErrorCode')
+        serverErrorMessage = (Get-AdPropValue $_.Exception 'ServerErrorMessage')
     } }
 }
 Write-Output '<<<TFAD:BEGIN>>>'

@@ -49,7 +49,7 @@ func TestScriptInvariants(t *testing.T) {
 		for _, want := range []string{
 			"$ErrorActionPreference = 'Stop'",
 			"Import-Module ActiveDirectory -ErrorAction Stop",
-			"ConvertFrom-Json -AsHashtable",
+			"ConvertTo-AdHashtable ([Console]::In.ReadToEnd() | ConvertFrom-Json)",
 			"<<<TFAD:BEGIN>>>",
 			"<<<TFAD:END>>>",
 			"-Depth 6 -Compress",
@@ -209,7 +209,7 @@ func TestToolScriptSharesTheEnvelope(t *testing.T) {
 	for _, want := range []string{
 		"$ErrorActionPreference = 'Stop'",
 		"Import-Module ActiveDirectory -ErrorAction Stop",
-		"ConvertFrom-Json -AsHashtable",
+		"ConvertTo-AdHashtable ([Console]::In.ReadToEnd() | ConvertFrom-Json)",
 		"$common['Credential']",
 		"<<<TFAD:BEGIN>>>",
 		"<<<TFAD:END>>>",
