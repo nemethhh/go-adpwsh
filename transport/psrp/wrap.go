@@ -9,6 +9,7 @@ import (
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
 	psrp "github.com/smnsjas/go-psrp/client"
+	"github.com/smnsjas/go-psrp/wsman"
 )
 
 // preload works around an empty [AppContext]::BaseDirectory in a PS7 remote
@@ -66,4 +67,99 @@ func mapExecuteError(err error) error {
 	default:
 		return &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
 	}
+}
+
+// deadShellRetryExhaustedMessage is startPipeline's own literal (client.go,
+// vendored go-psrp) when every one of its 3 attempts to prepare/invoke a
+// pipeline fails with a bare HTTP 401. That 401 is the one case a shell-death
+// signature can arrive with genuinely no SOAP body to type-check: WSMan never
+// gets to render a Fault because the request is rejected at the HTTP auth
+// layer first. There is nothing to wrap a sentinel around, so this is
+// deliberately the only string match left in isDeadShellFailure — everything
+// else that *can* carry a body is checked via wsman.Fault below instead.
+// Earlier revisions of this classifier also matched "prepare pipeline: " by
+// prefix, which was wrong: for the WSMan backend this repo always configures,
+// PreparePipeline (powershell/runspace.go) sends the script itself in the
+// same synchronous round trip that "prepare pipeline: " wraps — Invoke is
+// then a no-op (SkipInvokeSend) — so a "prepare pipeline: " failure is not
+// reliably pre-execution; a deadline or reset there can follow a script that
+// already reached the server. Re-verify this reasoning against
+// powershell/runspace.go and client/client.go's startPipeline on any go-psrp
+// version bump.
+const deadShellRetryExhaustedMessage = "failed to start pipeline after retries due to transport error"
+
+// preparePipelineWrapMarker is the literal wrap text startPipeline
+// (client/client.go) adds around a PreparePipeline/Command failure —
+// "prepare pipeline: %w". It is the only available signal (no sentinel
+// exists) that a failure originated in the prepare/command path rather than
+// in output streaming; see isDeadShellFailure for why that distinction is
+// required, not optional.
+const preparePipelineWrapMarker = "prepare pipeline: "
+
+// isDeadShellFailure reports whether err is the class of failure produced
+// when the shell behind a pooled conn no longer exists — idle-timeout reaped,
+// or the host's WinRM service was restarted. go-psrp's own Client keeps
+// believing it is connected in this situation (nothing resets its internal
+// `connected` flag; see conn.invalidate in psrp.go), so every attempt to
+// start a pipeline in that dead shell fails before the script runs. Run
+// treats this, and only this, as safe to retry once against a freshly
+// rebuilt client.
+//
+// Two checks, and the fault one is a conjunction, not a single signal:
+//
+//   - The bare HTTP-401 retry-exhausted literal, matched by string because a
+//     401 has no SOAP body to type-check — this is the one first-party
+//     message with no wrapped error underneath it to misclassify. Reachable
+//     only after 3 consecutive prepare-path 401s, so zero executions occurred.
+//
+//   - A "shell not found" WSMan Fault (IsShellNotFound), AND independent
+//     evidence it came from the prepare/command path, not output streaming.
+//     The fault alone is not enough: the exact same fault, with
+//     IsShellNotFound()==true, also arrives from Receive — WSManTransport.Read
+//     -> wsman.Client.Receive ("receive: %w") -> WSManTransport.Read's own
+//     "wsman receive: %w" -> runPipelineReceive's io.ReadFull failure
+//     ("read fragment header: %w") -> pl.Fail, returned verbatim by Wait() —
+//     a path that only runs AFTER Invoke succeeded. Receive uses the same
+//     ShellId selector as the prepare path, so a shell destroyed *mid-
+//     execution* (a WinRM bounce during a long replication wait, say)
+//     produces an indistinguishable fault. Retrying that resends the script
+//     after the original may already have completed its AD write.
+//
+//     So the fault only counts alongside preparePipelineWrapMarker being a
+//     PREFIX of the error text — the one thing that path adds and the
+//     Receive path never does (it wraps with "read fragment header: ",
+//     "wsman receive: ", "receive: " instead). errors.As still reaches the
+//     fault through arbitrary wrapping depth (startPipeline's
+//     "prepare pipeline: " -> PreparePipeline's "create wsman command: " ->
+//     Command's "create command: " -> sendEnvelope's "wsman: %w"; see
+//     wsman/client.go, wsman/errors.go), but the marker check is what tells
+//     apart which call site produced it. HasPrefix, not Contains: nothing
+//     wraps above startPipeline, so in the legitimate case the marker is
+//     always the outermost, first token of the string. Contains would also
+//     match server-supplied text — the fault's own Reason/Subcode from the
+//     DC — so a Receive-path fault whose message happened to contain the
+//     literal "prepare pipeline: " would forge the origin signal and defeat
+//     the whole point of requiring it.
+//
+//     This is deliberately a conjunction, not a fallback: if a future
+//     go-psrp version rewords either the fault's own text or this wrap
+//     marker, the conjunction simply stops matching and Run stops retrying
+//     — it fails closed (a surfaced error), never open (a silent retry).
+//
+// invoke pipeline: %w is deliberately not handled by either check: for the
+// WSMan backend, PreparePipeline already sends the script and calls
+// SkipInvokeSend (powershell/runspace.go), so psrpPipeline.Invoke never sends
+// anything and this error path is unreachable on this transport today. It
+// would need revisiting only if a different backend (e.g. HvSocket) were ever
+// wired into this package.
+func isDeadShellFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(err.Error(), deadShellRetryExhaustedMessage) {
+		return true
+	}
+	var fault *wsman.Fault
+	return errors.As(err, &fault) && fault.IsShellNotFound() &&
+		strings.HasPrefix(err.Error(), preparePipelineWrapMarker)
 }

@@ -25,6 +25,16 @@ type Config struct {
 	ConfigurationName  string
 	Concurrency        int
 	Timeout            time.Duration
+	// IdleTimeout is the WSMan shell lease requested when a pooled client's
+	// shell is created. Left unset, go-psrp itself requests a 30-minute lease
+	// — verified on the lab as the cause of a WinRM-shell leak: a shell this
+	// long-lived easily outlives the short-lived provider process that opened
+	// it, and nothing else ever tears it down server-side. Zero means "use
+	// the default", not "no timeout": there is deliberately no way to request
+	// an unbounded lease, and WithDefaults also floors any too-small positive
+	// value so the lease can never be so short the shell gets reaped out from
+	// under a live pool.
+	IdleTimeout time.Duration
 }
 
 func (c Config) WithDefaults() Config {
@@ -47,6 +57,20 @@ func (c Config) WithDefaults() Config {
 	if c.Timeout <= 0 {
 		c.Timeout = 60 * time.Second
 	}
+	if c.IdleTimeout <= 0 {
+		// Short enough that an abandoned shell is not worth caring about; the
+		// pool reconnects transparently (see conn.invalidate in psrp.go), so
+		// there is no cost to going lower. Long enough to comfortably exceed
+		// the gap between consecutive operations within one Terraform run.
+		c.IdleTimeout = 2 * time.Minute
+	} else if c.IdleTimeout < time.Second {
+		// Floor a too-small positive value rather than letting it survive to
+		// buildPSRPConfig, where int(d.Seconds()) would truncate anything
+		// under a second to 0 and emit "PT0S" — a lease the server could
+		// reap the shell under instantly, precisely the bug this field
+		// exists to prevent.
+		c.IdleTimeout = time.Second
+	}
 	return c
 }
 
@@ -65,6 +89,9 @@ func (c Config) Validate() error {
 	}
 	if c.Timeout < 0 {
 		return fmt.Errorf("psrp: timeout must not be negative (got %s)", c.Timeout)
+	}
+	if c.IdleTimeout < 0 {
+		return fmt.Errorf("psrp: idle timeout must not be negative (got %s)", c.IdleTimeout)
 	}
 	return nil
 }
