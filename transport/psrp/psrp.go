@@ -227,9 +227,15 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 		return adpwsh.Result{}, mapped
 	}
 
-	// Exactly one retry, against the freshly rebuilt conn. Safe because
-	// isDeadShellFailure only matches failures confirmed (from go-psrp's
-	// source) to occur before the script had any chance to reach the server.
+	// Exactly one retry, against the freshly rebuilt conn — never a loop: this
+	// is the only call to runOnce here, and whatever it returns goes straight
+	// back to the caller with no further branching. If the rebuilt client
+	// also fails non-transiently, runOnce leaves this conn with c.up == true
+	// (ensureConnected succeeded) pointing at a client that just failed to
+	// Execute; that is intentionally left alone rather than invalidated again
+	// here. It self-heals: the conn goes back to the idle channel via the
+	// defer above, and the next Run through it re-triages from the top of
+	// this function, invalidating it (again) if it is still bad.
 	return runOnce(ctx, c, wrapped)
 }
 

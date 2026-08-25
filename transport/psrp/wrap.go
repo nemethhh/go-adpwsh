@@ -9,6 +9,7 @@ import (
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
 	psrp "github.com/smnsjas/go-psrp/client"
+	"github.com/smnsjas/go-psrp/wsman"
 )
 
 // preload works around an empty [AppContext]::BaseDirectory in a PS7 remote
@@ -68,25 +69,24 @@ func mapExecuteError(err error) error {
 	}
 }
 
-// deadShellFailurePrefixes are the exact fmt.Errorf-wrapped messages go-psrp's
-// Client produces when a pipeline could not be *started* at all — i.e.
-// strictly before the script had any chance to run on the server. Sourced
-// from the vendored go-psrp (client/client.go's startPipeline): "create
-// pipeline", "get create pipeline data" and "prepare pipeline" all return
-// before psrpPipeline.Invoke is ever attempted, and the fourth string is
-// startPipeline's own message when every one of its 3 attempts fails before
-// a successful Invoke. Deliberately excludes "invoke pipeline: " and anything
-// surfacing from output streaming (pipeline.Wait, reached only after Invoke
-// succeeds): a failure there can mean the server already accepted and started
-// running the script, and retrying that risks re-running a write that already
-// reached Active Directory. Re-verify these strings against client.go on any
-// go-psrp version bump.
-var deadShellFailurePrefixes = []string{
-	"create pipeline: ",
-	"get create pipeline data: ",
-	"prepare pipeline: ",
-	"failed to start pipeline after retries due to transport error",
-}
+// deadShellRetryExhaustedMessage is startPipeline's own literal (client.go,
+// vendored go-psrp) when every one of its 3 attempts to prepare/invoke a
+// pipeline fails with a bare HTTP 401. That 401 is the one case a shell-death
+// signature can arrive with genuinely no SOAP body to type-check: WSMan never
+// gets to render a Fault because the request is rejected at the HTTP auth
+// layer first. There is nothing to wrap a sentinel around, so this is
+// deliberately the only string match left in isDeadShellFailure — everything
+// else that *can* carry a body is checked via wsman.Fault below instead.
+// Earlier revisions of this classifier also matched "prepare pipeline: " by
+// prefix, which was wrong: for the WSMan backend this repo always configures,
+// PreparePipeline (powershell/runspace.go) sends the script itself in the
+// same synchronous round trip that "prepare pipeline: " wraps — Invoke is
+// then a no-op (SkipInvokeSend) — so a "prepare pipeline: " failure is not
+// reliably pre-execution; a deadline or reset there can follow a script that
+// already reached the server. Re-verify this reasoning against
+// powershell/runspace.go and client/client.go's startPipeline on any go-psrp
+// version bump.
+const deadShellRetryExhaustedMessage = "failed to start pipeline after retries due to transport error"
 
 // isDeadShellFailure reports whether err is the class of failure produced
 // when the shell behind a pooled conn no longer exists — idle-timeout reaped,
@@ -96,15 +96,32 @@ var deadShellFailurePrefixes = []string{
 // start a pipeline in that dead shell fails before the script runs. Run
 // treats this, and only this, as safe to retry once against a freshly
 // rebuilt client.
+//
+// Two independent checks, deliberately asymmetric:
+//   - A definitive server-side "no such shell" WSMan Fault (IsShellNotFound)
+//     proves nothing could have executed: the request was rejected before
+//     WSMan ever routed it to a runspace. errors.As reaches it regardless of
+//     wrapping depth — the fault survives every %w in the chain from
+//     startPipeline's "prepare pipeline: " down through PreparePipeline's
+//     "create wsman command: ", Command's "create command: ", and
+//     sendEnvelope's "wsman: %w" (see wsman/client.go, wsman/errors.go).
+//   - The bare HTTP-401 retry-exhausted literal, matched by string because a
+//     401 has no SOAP body to type-check — this is the one first-party
+//     message with no wrapped error underneath it to misclassify.
+//
+// invoke pipeline: %w is deliberately not handled by either check: for the
+// WSMan backend, PreparePipeline already sends the script and calls
+// SkipInvokeSend (powershell/runspace.go), so psrpPipeline.Invoke never sends
+// anything and this error path is unreachable on this transport today. It
+// would need revisiting only if a different backend (e.g. HvSocket) were ever
+// wired into this package.
 func isDeadShellFailure(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	for _, p := range deadShellFailurePrefixes {
-		if strings.Contains(msg, p) {
-			return true
-		}
+	var fault *wsman.Fault
+	if errors.As(err, &fault) && fault.IsShellNotFound() {
+		return true
 	}
-	return false
+	return strings.Contains(err.Error(), deadShellRetryExhaustedMessage)
 }

@@ -167,6 +167,24 @@ func TestBuildPSRPConfigIdleTimeoutExplicit(t *testing.T) {
 	}
 }
 
+// TestBuildPSRPConfigLeavesGoPSRPRetryMachineryOff: our own Run does exactly
+// one bounded, narrowly-scoped retry (see isDeadShellFailure). Nothing
+// enforces that go-psrp's own retry machinery stays out of the way — if
+// Config.Retry or Config.Reconnect were ever enabled (by us, or by a future
+// go-psrp default change), its retries would compound with ours and
+// reintroduce the double-execution risk this transport is built to avoid.
+// buildPSRPConfig never touches either field, so psrp.DefaultConfig()'s own
+// defaults (Retry: nil, Reconnect.Enabled: false) must survive untouched.
+func TestBuildPSRPConfigLeavesGoPSRPRetryMachineryOff(t *testing.T) {
+	pc := buildPSRPConfig(Config{Host: "dc"}.WithDefaults())
+	if pc.Retry != nil {
+		t.Errorf("Retry = %+v, want nil (go-psrp's own command retry must stay disabled)", pc.Retry)
+	}
+	if pc.Reconnect.Enabled {
+		t.Error("Reconnect.Enabled = true, want false (go-psrp's own reconnect policy must stay disabled)")
+	}
+}
+
 // TestRunTransientFailureDoesNotInvalidateConn: a context deadline (or other
 // KindTransient condition) does not mean the shell is dead. Run must not
 // rebuild the conn or retry — the shell is fine, and the caller asked to
@@ -307,5 +325,47 @@ func TestRunGivesUpAfterExactlyOneRetry(t *testing.T) {
 	}
 	if dead1.calls != 1 || dead2.calls != 1 {
 		t.Errorf("dead1.calls=%d dead2.calls=%d, want 1 and 1 (exactly one retry, never a loop)", dead1.calls, dead2.calls)
+	}
+}
+
+// TestConcurrentPoolWideReapRecovers models a WinRM bounce that kills every
+// shell in the pool at once — not just one conn among several healthy ones.
+// Several conns are all dead simultaneously; concurrent Runs across them must
+// each independently invalidate and rebuild without racing on shared state.
+// Run with -race: this exercises this package's own locking (each conn's own
+// mutex, and the Transport's idle channel) under real concurrency. It cannot
+// exercise reentrancy in go-psrp's own Kerberos-provider construction when
+// several psrp.New calls race in a real process — that is a residual outside
+// what a fake-backed unit test can cover.
+func TestConcurrentPoolWideReapRecovers(t *testing.T) {
+	const n = 4
+	tr := &Transport{cfg: Config{Host: "dc"}.WithDefaults(), idle: make(chan *conn, n)}
+	for i := 0; i < n; i++ {
+		dead := &fakeExec{execErr: errors.New(deadShellRetryExhaustedMessage)}
+		tr.idle <- &conn{
+			exec: dead,
+			up:   true, // every shell in the pool believes itself connected
+			build: func() (executor, error) {
+				return &fakeExec{result: &psrp.Result{}}, nil
+			},
+		}
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := tr.Run(context.Background(), encode("x"), nil)
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: Run failed: %v", i, err)
+		}
 	}
 }
