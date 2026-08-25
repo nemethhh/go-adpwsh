@@ -2,6 +2,8 @@ package psrp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
@@ -39,6 +41,19 @@ func (c *conn) ensureConnected(ctx context.Context) error {
 	return nil
 }
 
+// invalidate marks the conn as needing to reconnect. Call it only after a
+// transport-class Execute failure: a dead or reaped shell must not go on
+// reporting itself connected, or every later Run through this pooled conn
+// would fail for the life of the process. A transient failure (a busy queue,
+// a context deadline) means no such thing — the shell is still good — so
+// callers must not invalidate on that path; see mapExecuteError's
+// classification and its call site in Run.
+func (c *conn) invalidate() {
+	c.mu.Lock()
+	c.up = false
+	c.mu.Unlock()
+}
+
 // Transport runs go-adpwsh commands over PSRP/WinRM via a checkout pool of
 // independent clients. It satisfies adpwsh.Transport.
 type Transport struct {
@@ -51,9 +66,11 @@ type Transport struct {
 
 var _ adpwsh.Transport = (*Transport)(nil)
 
-// newClient builds one go-psrp client with a single runspace. Concurrency comes
-// from the pool of clients, never from MaxRunspaces (which would race on SetIn).
-func newClient(cfg Config) (executor, error) {
+// buildPSRPConfig translates our Config into the go-psrp client Config. It is
+// split out from newClient — which only returns the executor interface,
+// hiding the concrete config — so a test can inspect exactly what gets sent
+// over the wire, in particular the IdleTimeout translation below.
+func buildPSRPConfig(cfg Config) *psrp.Config {
 	pc := psrp.DefaultConfig()
 	pc.Port = cfg.Port
 	pc.UseTLS = cfg.UseTLS
@@ -70,7 +87,20 @@ func newClient(cfg Config) (executor, error) {
 	pc.KeytabPath = cfg.KeytabPath
 	pc.ConfigurationName = cfg.ConfigurationName
 	pc.MaxRunspaces = 1
-	return psrp.New(cfg.Host, pc)
+	// go-psrp's wsman layer requests a 30-minute shell lease (rsp:IdleTimeOut)
+	// whenever this is empty — the root cause of the WinRM-shell leak this
+	// field closes (see Config.IdleTimeout). PT<seconds>S is accepted
+	// ISO8601 and matches what a live shell reports back (e.g. PT1800.000S
+	// for the 30-minute default we are overriding).
+	pc.IdleTimeout = fmt.Sprintf("PT%dS", int(cfg.IdleTimeout.Seconds()))
+	return &pc
+}
+
+// newClient builds one go-psrp client with a single runspace. Concurrency comes
+// from the pool of clients, never from MaxRunspaces (which would race on SetIn).
+func newClient(cfg Config) (executor, error) {
+	pc := buildPSRPConfig(cfg)
+	return psrp.New(cfg.Host, *pc)
 }
 
 // New validates the configuration, then builds the client pool. It does not
@@ -114,7 +144,17 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 
 	res, err := c.exec.Execute(ctx, buildWrapper(script, payload))
 	if err != nil {
-		return adpwsh.Result{}, mapExecuteError(err)
+		mapped := mapExecuteError(err)
+		var ae *adpwsh.Error
+		if errors.As(mapped, &ae) && ae.Kind != adpwsh.KindTransient {
+			// Not a busy queue or a deadline: the shell itself is suspect
+			// (dead, reaped, or the host restarted WinRM). Invalidate so the
+			// conn reconnects on its next checkout instead of reusing it —
+			// the checked-out conn goes back to the idle channel via the
+			// defer above, so another goroutine can pick it up right away.
+			c.invalidate()
+		}
+		return adpwsh.Result{}, mapped
 	}
 	return adpwsh.Result{
 		Stdout:   joinObjects(res.Output),

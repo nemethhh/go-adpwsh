@@ -6,17 +6,19 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
 	psrp "github.com/smnsjas/go-psrp/client"
 )
 
 type fakeExec struct {
-	mu         sync.Mutex
-	calls      int
-	lastScript string
-	result     *psrp.Result
-	execErr    error
+	mu           sync.Mutex
+	calls        int
+	connectCalls int
+	lastScript   string
+	result       *psrp.Result
+	execErr      error
 
 	// arrived/release, when non-nil, let a test gate concurrency: Execute
 	// signals arrival then blocks until release is closed/sent to.
@@ -24,8 +26,13 @@ type fakeExec struct {
 	release chan struct{}
 }
 
-func (f *fakeExec) Connect(context.Context) error { return nil }
-func (f *fakeExec) Close(context.Context) error   { return nil }
+func (f *fakeExec) Connect(context.Context) error {
+	f.mu.Lock()
+	f.connectCalls++
+	f.mu.Unlock()
+	return nil
+}
+func (f *fakeExec) Close(context.Context) error { return nil }
 func (f *fakeExec) Execute(_ context.Context, s string) (*psrp.Result, error) {
 	f.mu.Lock()
 	f.calls++
@@ -122,5 +129,89 @@ func TestPoolCheckoutSpreadsAcrossClients(t *testing.T) {
 
 	if f1.calls != 1 || f2.calls != 1 {
 		t.Errorf("expected each client used exactly once, got f1=%d f2=%d", f1.calls, f2.calls)
+	}
+}
+
+// TestBuildPSRPConfigIdleTimeoutDefault: newClient's go-psrp config must carry
+// a short, non-empty IdleTimeout. Left unset, go-psrp itself requests a
+// 30-minute shell lease (PT30M) — the root cause of the WinRM-shell leak this
+// change closes — so this must never come back empty.
+func TestBuildPSRPConfigIdleTimeoutDefault(t *testing.T) {
+	cfg := Config{Host: "dc"}.WithDefaults()
+	pc := buildPSRPConfig(cfg)
+	if pc.IdleTimeout == "" {
+		t.Fatal("IdleTimeout is empty; go-psrp will fall back to its own PT30M default")
+	}
+	if pc.IdleTimeout != "PT120S" {
+		t.Errorf("IdleTimeout = %q, want PT120S (2 minutes)", pc.IdleTimeout)
+	}
+}
+
+// TestBuildPSRPConfigIdleTimeoutExplicit: an explicit Config.IdleTimeout is
+// translated verbatim into the ISO8601 form go-psrp expects.
+func TestBuildPSRPConfigIdleTimeoutExplicit(t *testing.T) {
+	cfg := Config{Host: "dc", IdleTimeout: 5 * time.Minute}.WithDefaults()
+	pc := buildPSRPConfig(cfg)
+	if pc.IdleTimeout != "PT300S" {
+		t.Errorf("IdleTimeout = %q, want PT300S (5 minutes)", pc.IdleTimeout)
+	}
+}
+
+// TestRunTransportFailureInvalidatesConn: a transport-class Execute failure
+// (KindTransport — dial/auth/protocol, not a busy queue or a deadline) means
+// the shell itself is suspect, so the conn must be marked not-connected. The
+// next Run through it reconnects instead of reusing a dead shell — without
+// this, every later Run on that pooled conn would fail for the life of the
+// process (finding 3 in the leak analysis).
+func TestRunTransportFailureInvalidatesConn(t *testing.T) {
+	f := &fakeExec{execErr: errors.New("dial tcp: connection refused")}
+	tr := &Transport{cfg: Config{Host: "dc"}.WithDefaults(), idle: make(chan *conn, 1)}
+	tr.idle <- &conn{exec: f} // up defaults false, same as a freshly built pool
+
+	if _, err := tr.Run(context.Background(), encode("x"), nil); err == nil {
+		t.Fatal("first Run: want error, got nil")
+	}
+	if f.connectCalls != 1 {
+		t.Fatalf("connectCalls after first Run = %d, want 1", f.connectCalls)
+	}
+
+	f.mu.Lock()
+	f.execErr = nil
+	f.result = &psrp.Result{}
+	f.mu.Unlock()
+
+	if _, err := tr.Run(context.Background(), encode("x"), nil); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if f.connectCalls != 2 {
+		t.Errorf("connectCalls after second Run = %d, want 2 (dead shell should have been reconnected)", f.connectCalls)
+	}
+}
+
+// TestRunTransientFailureDoesNotInvalidateConn: a context deadline (or other
+// KindTransient condition) does not mean the shell is dead. Tearing down a
+// warm shell over one operation's deadline would be a performance regression
+// — the transport should reuse it, not reconnect.
+func TestRunTransientFailureDoesNotInvalidateConn(t *testing.T) {
+	f := &fakeExec{execErr: context.DeadlineExceeded}
+	tr := &Transport{cfg: Config{Host: "dc"}.WithDefaults(), idle: make(chan *conn, 1)}
+	tr.idle <- &conn{exec: f, up: true} // already connected; a real warm shell
+
+	_, err := tr.Run(context.Background(), encode("x"), nil)
+	var e *adpwsh.Error
+	if !errors.As(err, &e) || e.Kind != adpwsh.KindTransient {
+		t.Fatalf("first Run: want KindTransient, got %v", err)
+	}
+
+	f.mu.Lock()
+	f.execErr = nil
+	f.result = &psrp.Result{}
+	f.mu.Unlock()
+
+	if _, err := tr.Run(context.Background(), encode("x"), nil); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if f.connectCalls != 0 {
+		t.Errorf("connectCalls = %d, want 0 (a transient failure must not invalidate a good shell)", f.connectCalls)
 	}
 }

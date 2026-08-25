@@ -22,12 +22,25 @@ func TestWithDefaults(t *testing.T) {
 	if got.Timeout != 60*time.Second {
 		t.Errorf("Timeout = %s, want 60s", got.Timeout)
 	}
+	if got.IdleTimeout != 2*time.Minute {
+		t.Errorf("IdleTimeout = %s, want 2m", got.IdleTimeout)
+	}
 }
 
 func TestWithDefaultsTLSPort(t *testing.T) {
 	got := Config{Host: "dc.corp.local", UseTLS: true}.WithDefaults()
 	if got.Port != 5986 {
 		t.Errorf("Port = %d, want 5986", got.Port)
+	}
+}
+
+// TestWithDefaultsIdleTimeoutExplicit: an explicit IdleTimeout survives
+// WithDefaults unchanged. Zero means "use the default", not "no timeout" —
+// there is deliberately no way to request an unbounded shell lease.
+func TestWithDefaultsIdleTimeoutExplicit(t *testing.T) {
+	got := Config{Host: "dc.corp.local", IdleTimeout: 5 * time.Minute}.WithDefaults()
+	if got.IdleTimeout != 5*time.Minute {
+		t.Errorf("IdleTimeout = %s, want 5m", got.IdleTimeout)
 	}
 }
 
@@ -43,5 +56,8 @@ func TestValidate(t *testing.T) {
 	}
 	if err := (Config{Host: "dc", Concurrency: -1}).Validate(); err == nil {
 		t.Error("negative concurrency: want error, got nil")
+	}
+	if err := (Config{Host: "dc", IdleTimeout: -1}).Validate(); err == nil {
+		t.Error("negative idle timeout: want error, got nil")
 	}
 }
