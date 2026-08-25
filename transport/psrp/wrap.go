@@ -88,6 +88,14 @@ func mapExecuteError(err error) error {
 // version bump.
 const deadShellRetryExhaustedMessage = "failed to start pipeline after retries due to transport error"
 
+// preparePipelineWrapMarker is the literal wrap text startPipeline
+// (client/client.go) adds around a PreparePipeline/Command failure —
+// "prepare pipeline: %w". It is the only available signal (no sentinel
+// exists) that a failure originated in the prepare/command path rather than
+// in output streaming; see isDeadShellFailure for why that distinction is
+// required, not optional.
+const preparePipelineWrapMarker = "prepare pipeline: "
+
 // isDeadShellFailure reports whether err is the class of failure produced
 // when the shell behind a pooled conn no longer exists — idle-timeout reaped,
 // or the host's WinRM service was restarted. go-psrp's own Client keeps
@@ -97,17 +105,40 @@ const deadShellRetryExhaustedMessage = "failed to start pipeline after retries d
 // treats this, and only this, as safe to retry once against a freshly
 // rebuilt client.
 //
-// Two independent checks, deliberately asymmetric:
-//   - A definitive server-side "no such shell" WSMan Fault (IsShellNotFound)
-//     proves nothing could have executed: the request was rejected before
-//     WSMan ever routed it to a runspace. errors.As reaches it regardless of
-//     wrapping depth — the fault survives every %w in the chain from
-//     startPipeline's "prepare pipeline: " down through PreparePipeline's
-//     "create wsman command: ", Command's "create command: ", and
-//     sendEnvelope's "wsman: %w" (see wsman/client.go, wsman/errors.go).
+// Two checks, and the fault one is a conjunction, not a single signal:
+//
 //   - The bare HTTP-401 retry-exhausted literal, matched by string because a
 //     401 has no SOAP body to type-check — this is the one first-party
-//     message with no wrapped error underneath it to misclassify.
+//     message with no wrapped error underneath it to misclassify. Reachable
+//     only after 3 consecutive prepare-path 401s, so zero executions occurred.
+//
+//   - A "shell not found" WSMan Fault (IsShellNotFound), AND independent
+//     evidence it came from the prepare/command path, not output streaming.
+//     The fault alone is not enough: the exact same fault, with
+//     IsShellNotFound()==true, also arrives from Receive — WSManTransport.Read
+//     -> wsman.Client.Receive ("receive: %w") -> WSManTransport.Read's own
+//     "wsman receive: %w" -> runPipelineReceive's io.ReadFull failure
+//     ("read fragment header: %w") -> pl.Fail, returned verbatim by Wait() —
+//     a path that only runs AFTER Invoke succeeded. Receive uses the same
+//     ShellId selector as the prepare path, so a shell destroyed *mid-
+//     execution* (a WinRM bounce during a long replication wait, say)
+//     produces an indistinguishable fault. Retrying that resends the script
+//     after the original may already have completed its AD write.
+//
+//     So the fault only counts alongside preparePipelineWrapMarker being
+//     present in the error text — the one thing that path adds and the
+//     Receive path never does (it wraps with "read fragment header: ",
+//     "wsman receive: ", "receive: " instead). errors.As still reaches the
+//     fault through arbitrary wrapping depth (startPipeline's
+//     "prepare pipeline: " -> PreparePipeline's "create wsman command: " ->
+//     Command's "create command: " -> sendEnvelope's "wsman: %w"; see
+//     wsman/client.go, wsman/errors.go), but the marker check is what tells
+//     apart which call site produced it.
+//
+//     This is deliberately a conjunction, not a fallback: if a future
+//     go-psrp version rewords either the fault's own text or this wrap
+//     marker, the conjunction simply stops matching and Run stops retrying
+//     — it fails closed (a surfaced error), never open (a silent retry).
 //
 // invoke pipeline: %w is deliberately not handled by either check: for the
 // WSMan backend, PreparePipeline already sends the script and calls
@@ -119,9 +150,10 @@ func isDeadShellFailure(err error) bool {
 	if err == nil {
 		return false
 	}
-	var fault *wsman.Fault
-	if errors.As(err, &fault) && fault.IsShellNotFound() {
+	if strings.Contains(err.Error(), deadShellRetryExhaustedMessage) {
 		return true
 	}
-	return strings.Contains(err.Error(), deadShellRetryExhaustedMessage)
+	var fault *wsman.Fault
+	return errors.As(err, &fault) && fault.IsShellNotFound() &&
+		strings.Contains(err.Error(), preparePipelineWrapMarker)
 }

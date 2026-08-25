@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -332,22 +333,30 @@ func TestRunGivesUpAfterExactlyOneRetry(t *testing.T) {
 // shell in the pool at once — not just one conn among several healthy ones.
 // Several conns are all dead simultaneously; concurrent Runs across them must
 // each independently invalidate and rebuild without racing on shared state.
-// Run with -race: this exercises this package's own locking (each conn's own
-// mutex, and the Transport's idle channel) under real concurrency. It cannot
-// exercise reentrancy in go-psrp's own Kerberos-provider construction when
-// several psrp.New calls race in a real process — that is a residual outside
-// what a fake-backed unit test can cover.
+// All conns share a SINGLE build closure, exactly as New() wires it in
+// production (one closure over cfg, reused for every pooled conn) — a
+// separate closure literal per conn would not exercise concurrent entry into
+// one shared build. Run with -race: this exercises this package's own
+// locking (each conn's own mutex, the Transport's idle channel, and the
+// shared build closure's own atomic counter) under real concurrency. It
+// cannot exercise reentrancy in go-psrp's own Kerberos-provider construction
+// when several real psrp.New calls race in a real process — that is a
+// residual outside what a fake-backed unit test can cover.
 func TestConcurrentPoolWideReapRecovers(t *testing.T) {
 	const n = 4
+	var builds int32
+	build := func() (executor, error) {
+		atomic.AddInt32(&builds, 1)
+		return &fakeExec{result: &psrp.Result{}}, nil
+	}
+
 	tr := &Transport{cfg: Config{Host: "dc"}.WithDefaults(), idle: make(chan *conn, n)}
 	for i := 0; i < n; i++ {
 		dead := &fakeExec{execErr: errors.New(deadShellRetryExhaustedMessage)}
 		tr.idle <- &conn{
-			exec: dead,
-			up:   true, // every shell in the pool believes itself connected
-			build: func() (executor, error) {
-				return &fakeExec{result: &psrp.Result{}}, nil
-			},
+			exec:  dead,
+			up:    true, // every shell in the pool believes itself connected
+			build: build,
 		}
 	}
 
@@ -367,5 +376,8 @@ func TestConcurrentPoolWideReapRecovers(t *testing.T) {
 		if err != nil {
 			t.Errorf("goroutine %d: Run failed: %v", i, err)
 		}
+	}
+	if got := atomic.LoadInt32(&builds); got != n {
+		t.Errorf("builds = %d, want %d (one rebuild per dead conn, through the shared closure)", got, n)
 	}
 }

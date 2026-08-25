@@ -72,17 +72,19 @@ func TestMapExecuteError(t *testing.T) {
 }
 
 // TestIsDeadShellFailure pins the exact boundary Run uses to decide whether a
-// KindTransport Execute failure is safe to retry. Two independent, narrow
-// checks: a typed wsman.Fault confirming the server has no such shell
-// (reached through arbitrary %w wrapping, mirroring startPipeline's real
-// wrap chain), or the one literal that has no fault to hang off (a bare HTTP
-// 401 after the internal auth-retry loop is exhausted). Everything else —
-// including a "prepare pipeline: " failure with no fault underneath it, e.g.
-// a plain context deadline or connection reset — must come back false: for
-// the WSMan backend this repo configures, PreparePipeline already sends the
-// script in that same round trip, so such a failure is not provably
-// pre-execution and retrying it risks re-running a write that already
-// reached Active Directory.
+// KindTransport Execute failure is safe to retry: the bare HTTP-401
+// retry-exhausted literal, or a typed wsman.Fault confirming the server has
+// no such shell AND independent evidence it came from the prepare/command
+// path rather than output streaming. The fault check is deliberately a
+// conjunction, not the fault alone: the identical fault, with
+// IsShellNotFound()==true, also arrives from the Receive path (reached only
+// after Invoke already succeeded), so isDeadShellFailure must require the
+// "prepare pipeline: " wrap marker alongside the fault, or it would retry an
+// operation that may have already reached Active Directory. Everything else
+// — including a "prepare pipeline: " failure with no fault underneath it
+// (e.g. a plain context deadline or connection reset), and a genuine
+// shell-not-found fault wrapped the way the Receive path wraps it — must
+// come back false.
 func TestIsDeadShellFailure(t *testing.T) {
 	shellNotFound := &wsman.Fault{
 		Subcode: "w:InvalidSelectors",
@@ -90,12 +92,24 @@ func TestIsDeadShellFailure(t *testing.T) {
 	}
 	accessDenied := &wsman.Fault{Subcode: "w:AccessDenied", WSManCode: 5}
 
-	// wrapLikeStartPipeline mirrors the real chain a WSMan fault travels
-	// through: sendEnvelope's "wsman: %w" -> Command's "create command: %w"
-	// -> PreparePipeline's "create wsman command: %w" -> startPipeline's
-	// "prepare pipeline: %w".
-	wrapLikeStartPipeline := func(cause error) error {
+	// wrapLikePreparePath mirrors the real chain a WSMan fault travels
+	// through when PreparePipeline/Command fails: sendEnvelope's "wsman: %w"
+	// -> Command's "create command: %w" -> PreparePipeline's "create wsman
+	// command: %w" -> startPipeline's "prepare pipeline: %w". This runs
+	// before Invoke, so nothing has reached the server yet.
+	wrapLikePreparePath := func(cause error) error {
 		return fmt.Errorf("prepare pipeline: %w", fmt.Errorf("create wsman command: %w", fmt.Errorf("create command: %w", fmt.Errorf("wsman: %w", cause))))
+	}
+
+	// wrapLikeReceivePath mirrors the real chain the exact same fault travels
+	// through when it instead arrives from output streaming, which only runs
+	// AFTER Invoke succeeded: wsman.Client.Receive's "receive: %w" ->
+	// WSManTransport.Read's "wsman receive: %w" -> runPipelineReceive's
+	// io.ReadFull failure, "read fragment header: %w" (client/client.go).
+	// This never contains "prepare pipeline: " anywhere — that is the whole
+	// point of requiring the marker.
+	wrapLikeReceivePath := func(cause error) error {
+		return fmt.Errorf("read fragment header: %w", fmt.Errorf("wsman receive: %w", fmt.Errorf("receive: %w", fmt.Errorf("wsman: %w", cause))))
 	}
 
 	cases := []struct {
@@ -105,10 +119,11 @@ func TestIsDeadShellFailure(t *testing.T) {
 	}{
 		{"nil", nil, false},
 		{"retry-exhausted (the exact lab failure, no SOAP body to type-check)", errors.New(deadShellRetryExhaustedMessage), true},
-		{"shell-not-found fault, wrapped through the real chain", wrapLikeStartPipeline(shellNotFound), true},
-		{"access-denied fault: a real fault, but not a dead shell", wrapLikeStartPipeline(accessDenied), false},
-		{"prepare pipeline with no fault underneath (deadline) — must NOT retry", wrapLikeStartPipeline(context.DeadlineExceeded), false},
-		{"prepare pipeline with no fault underneath (connection reset) — must NOT retry", wrapLikeStartPipeline(errors.New("read tcp 10.0.0.1:1234: connection reset by peer")), false},
+		{"shell-not-found fault from the prepare path — must retry", wrapLikePreparePath(shellNotFound), true},
+		{"shell-not-found fault from the RECEIVE path (post-Invoke) — must NOT retry", wrapLikeReceivePath(shellNotFound), false},
+		{"access-denied fault from the prepare path: a real fault, but not a dead shell", wrapLikePreparePath(accessDenied), false},
+		{"prepare pipeline with no fault underneath (deadline) — must NOT retry", wrapLikePreparePath(context.DeadlineExceeded), false},
+		{"prepare pipeline with no fault underneath (connection reset) — must NOT retry", wrapLikePreparePath(errors.New("read tcp 10.0.0.1:1234: connection reset by peer")), false},
 		{"create pipeline (local, no longer specially recognized)", errors.New("create pipeline: pool is broken"), false},
 		{"get create pipeline data (local, no longer specially recognized)", errors.New("get create pipeline data: serialize: boom"), false},
 		{"invoke pipeline (unreachable on the WSMan backend; excluded on purpose)", errors.New("invoke pipeline: dial tcp: connection refused"), false},
