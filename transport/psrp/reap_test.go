@@ -2,7 +2,10 @@ package psrp
 
 import (
 	"context"
+	"fmt"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -272,5 +275,194 @@ func TestCloseReapLoopDoesNotLeakGoroutines(t *testing.T) {
 	if after > before+tolerance {
 		t.Errorf("goroutines before=%d after=%d cycles=%d: grew by %d, want <= %d (reap goroutine leaking)",
 			before, after, cycles, after-before, tolerance)
+	}
+}
+
+// TestReapInterval pins reapInterval's two documented properties: it scales
+// with ReapAfter (so a shell goes idle-then-reaped within roughly ReapAfter
+// plus one tick, not on some unrelated cadence) and it never goes below one
+// second — the floor that keeps an aggressively small ReapAfter from turning
+// the reaper into a busy-loop. Neither was asserted anywhere before this.
+func TestReapInterval(t *testing.T) {
+	tests := []struct {
+		name      string
+		reapAfter time.Duration
+		want      time.Duration
+	}{
+		{"scales at ReapAfter/4", 8 * time.Second, 2 * time.Second},
+		{"the 30s default scales to 7.5s", 30 * time.Second, 7500 * time.Millisecond},
+		{"zero floors at 1s", 0, time.Second},
+		{"a tiny ReapAfter floors at 1s", 20 * time.Millisecond, time.Second},
+		{"exactly at the floor boundary stays at 1s", 4 * time.Second, time.Second},
+		{"just past the boundary scales, not floors", 4*time.Second + 4*time.Millisecond, time.Second + time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reapInterval(tt.reapAfter); got != tt.want {
+				t.Errorf("reapInterval(%s) = %s, want %s", tt.reapAfter, got, tt.want)
+			}
+		})
+	}
+}
+
+// newStressTestTransport builds a Transport the same way New() does —
+// reapStop/reapDone wired, reapLoop actually started — but with fakeExec
+// clients instead of real go-psrp ones, so it can be driven concurrently at
+// speed. It exists specifically for TestReapAndRunUnderConcurrentStress:
+// every other test in this file that starts the real goroutine
+// (newRealTestTransport) creates and immediately Closes without ever
+// calling Run, so nothing before this test actually overlaps the reaper
+// with an in-flight Run in time — every reap-behavior test above calls
+// reapIdle synchronously and sequentially with Run, never concurrently.
+func newStressTestTransport(cfg Config) *Transport {
+	cfg = cfg.WithDefaults()
+	tr := &Transport{
+		cfg:      cfg,
+		idle:     make(chan *conn, cfg.Concurrency),
+		reapStop: make(chan struct{}),
+		reapDone: make(chan struct{}),
+	}
+	build := func() (executor, error) { return &fakeExec{result: &psrp.Result{}}, nil }
+	for i := 0; i < cfg.Concurrency; i++ {
+		// Mirrors New()'s own construction: every conn needs a non-nil exec
+		// from the start (up stays false, so it connects lazily on first
+		// use, exactly like a real pool) — a conn built with a nil exec is
+		// not a state Run or the reaper is ever meant to encounter.
+		c, err := build()
+		if err != nil {
+			panic(err) // build() above never errors; a test-only invariant
+		}
+		tr.idle <- &conn{exec: c, build: build}
+	}
+	go tr.reapLoop()
+	return tr
+}
+
+// TestReapAndRunUnderConcurrentStress drives Run and the real reap
+// goroutine against each other for real wall-clock time, then Closes — the
+// gap every other test in this file leaves open: they either call reapIdle
+// synchronously and sequentially with Run (never overlapping in time), or
+// start the real goroutine and Close immediately without issuing any Runs.
+// The properties argued for in reapIdle/reapConnIfIdle/Close's own
+// comments — that the reaper can never observe a conn a Run holds, can
+// never block a Run, and that Close cannot race a sweep in flight — are
+// checked here under actual concurrent scheduling, not only by inspection.
+// -race is what makes this test meaningful: it cannot catch a defect in an
+// interaction no test actually drives concurrently.
+//
+// ReapAfter is set small so that once the reaper's ticker does fire, every
+// conn in the pool is already well past its window and eligible. But
+// reapInterval floors at one second regardless of how small ReapAfter is
+// (see TestReapInterval), so the first sweep cannot happen before roughly a
+// second in — the stress window below is sized past that floor
+// deliberately, not left at some shorter "a few hundred milliseconds"
+// figure, specifically so a real sweep is overwhelmingly likely to land
+// while Runs are still in flight, rather than merely coexisting with a
+// reaper that never actually wakes during the window.
+//
+// Every assertion below is on a property that must hold no matter how the
+// scheduler interleaves things — never on a particular interleaving having
+// occurred — because the interleaving itself is not something a test can
+// control or observe deterministically.
+func TestReapAndRunUnderConcurrentStress(t *testing.T) {
+	// Concurrency 1 is the configuration where a reap in progress and a Run
+	// genuinely compete for the only conn in the pool, rather than one of
+	// several; both are worth covering.
+	for _, concurrency := range []int{4, 1} {
+		t.Run(fmt.Sprintf("Concurrency=%d", concurrency), func(t *testing.T) {
+			testReapAndRunUnderConcurrentStress(t, concurrency)
+		})
+	}
+}
+
+func testReapAndRunUnderConcurrentStress(t *testing.T, concurrency int) {
+	cfg := Config{Host: "dc"}.WithDefaults()
+	cfg.Concurrency = concurrency
+	cfg.ReapAfter = 30 * time.Millisecond
+	tr := newStressTestTransport(cfg)
+
+	const window = 1300 * time.Millisecond // past reapInterval's 1s floor
+	deadline := time.Now().Add(window)
+
+	const workers = 8
+	var wg sync.WaitGroup
+	var totalRuns int64
+	var badMu sync.Mutex
+	var badErrs []error
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(deadline) {
+				_, err := tr.Run(context.Background(), encode("x"), nil)
+				atomic.AddInt64(&totalRuns, 1)
+				if err != nil {
+					badMu.Lock()
+					if len(badErrs) < 20 {
+						badErrs = append(badErrs, err)
+					}
+					badMu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(badErrs) > 0 {
+		// Every Run here runs against a fakeExec that never returns an
+		// error and never fails to Connect, and Run's checkout uses
+		// context.Background() (never cancelled), so the "pool busy"
+		// ctx.Done() path can never fire either. The only way a Run could
+		// observe an error in this test is a pool-ownership violation — the
+		// reaper and a Run both touching the same conn at once — which is a
+		// correctness bug, not a legitimate transient condition to filter
+		// by Kind.
+		t.Errorf("%d/%d Run calls failed; first few: %v", len(badErrs), totalRuns, badErrs)
+	}
+	if totalRuns == 0 {
+		t.Fatal("no Run calls completed; the stress loop did not run")
+	}
+	t.Logf("concurrency=%d total Run calls=%d", concurrency, totalRuns)
+
+	// Pool capacity intact: drain exactly `concurrency` distinct conns back
+	// out, with a bound on each receive so a reaper that is (legitimately)
+	// still mid-sweep does not hang the test — reapConnIfIdle's own work
+	// against a fakeExec is effectively instant, so this bound is generous,
+	// not tight.
+	seen := make(map[*conn]bool, concurrency)
+	drained := make([]*conn, 0, concurrency)
+	for i := 0; i < concurrency; i++ {
+		select {
+		case c := <-tr.idle:
+			if seen[c] {
+				t.Fatalf("conn %p received twice while draining the pool", c)
+			}
+			seen[c] = true
+			drained = append(drained, c)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("pool has fewer than %d conns after the stress run (drained %d)", concurrency, len(drained))
+		}
+	}
+	select {
+	case c := <-tr.idle:
+		t.Fatalf("pool has more than %d conns after the stress run (extra: %p)", concurrency, c)
+	default:
+		// Expected: exactly `concurrency` conns total, no extras conjured
+		// and none lost.
+	}
+	for _, c := range drained {
+		tr.idle <- c // restore before Close, which itself expects to drain exactly Concurrency conns
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- tr.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return within 5s (reaper likely failed to stop, or deadlocked against the drain)")
 	}
 }
