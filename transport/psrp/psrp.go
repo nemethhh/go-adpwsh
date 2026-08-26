@@ -223,7 +223,7 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 	if err != nil {
 		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
 	}
-	wrapped := buildWrapper(script, payload)
+	wrapped := buildWrapper(script, payload, t.cfg.Constrained())
 
 	// A plain Connect failure is deliberately not run through
 	// invalidate/retry below: ensureConnected already leaves c.up false on
