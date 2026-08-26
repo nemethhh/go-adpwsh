@@ -62,7 +62,7 @@ func TestClassify(t *testing.T) {
 // Guessing that an unrecognised error is transient turns a permission problem
 // into a hang, so only KindTransient is ever retried.
 func TestOnlyTransientRetries(t *testing.T) {
-	for k := KindUnknown; k <= KindTooManyResults; k++ {
+	for k := KindUnknown; k <= KindUnsupported; k++ {
 		if got := k.retryable(); got != (k == KindTransient) {
 			t.Errorf("Kind(%v).retryable() = %v", k, got)
 		}

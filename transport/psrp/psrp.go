@@ -197,6 +197,10 @@ func runOnce(ctx context.Context, c *conn, wrapped string) (adpwsh.Result, error
 	}, nil
 }
 
+// Constrained reports whether this endpoint runs in ConstrainedLanguage mode.
+// core.exec uses this (via an optional interface) to refuse the ACL ops.
+func (t *Transport) Constrained() bool { return t.cfg.Constrained() }
+
 // Run implements adpwsh.Transport.
 func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []byte) (adpwsh.Result, error) {
 	var c *conn
