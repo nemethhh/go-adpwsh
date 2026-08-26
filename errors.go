@@ -174,6 +174,7 @@ var (
 	ErrSchema           error = kindSentinel{KindSchema}
 	ErrReplication      error = kindSentinel{KindReplication}
 	ErrTooManyResults   error = kindSentinel{KindTooManyResults}
+	ErrUnsupported      error = kindSentinel{KindUnsupported}
 )
 
 func shortTypeName(full string) string {
