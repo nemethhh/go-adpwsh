@@ -197,6 +197,10 @@ func runOnce(ctx context.Context, c *conn, wrapped string) (adpwsh.Result, error
 	}, nil
 }
 
+// Constrained reports whether this endpoint runs in ConstrainedLanguage mode.
+// core.exec uses this (via an optional interface) to refuse the ACL ops.
+func (t *Transport) Constrained() bool { return t.cfg.Constrained() }
+
 // Run implements adpwsh.Transport.
 func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []byte) (adpwsh.Result, error) {
 	var c *conn
@@ -223,7 +227,7 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 	if err != nil {
 		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
 	}
-	wrapped := buildWrapper(script, payload)
+	wrapped := buildWrapper(script, payload, t.cfg.Constrained())
 
 	// A plain Connect failure is deliberately not run through
 	// invalidate/retry below: ensureConnected already leaves c.up false on

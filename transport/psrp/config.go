@@ -23,8 +23,13 @@ type Config struct {
 	CCachePath         string
 	KeytabPath         string
 	ConfigurationName  string
-	Concurrency        int
-	Timeout            time.Duration
+	// LanguageMode selects the endpoint's PowerShell language mode: "" or
+	// "full" (default — the existing behaviour), or "constrained" for a
+	// ConstrainedLanguage sandbox endpoint. See the psrp-constrained-language
+	// design doc.
+	LanguageMode string
+	Concurrency  int
+	Timeout      time.Duration
 	// IdleTimeout is the WSMan shell lease requested when a pooled client's
 	// shell is created. Left unset, go-psrp itself requests a 30-minute lease
 	// — verified on the lab as the cause of a WinRM-shell leak: a shell this
@@ -94,6 +99,11 @@ func (c Config) WithDefaults() Config {
 	return c
 }
 
+// Constrained reports whether the endpoint runs in ConstrainedLanguage mode,
+// which changes payload delivery and credential construction and forbids the
+// ACL ops (their .NET DirectoryServices calls are unavailable under CLM).
+func (c Config) Constrained() bool { return c.LanguageMode == "constrained" }
+
 // Validate is called on the raw config, before WithDefaults, so a negative
 // concurrency is rejected here rather than silently accepted (WithDefaults
 // later defaults an unset value).
@@ -115,6 +125,11 @@ func (c Config) Validate() error {
 	}
 	if c.ReapAfter < 0 {
 		return fmt.Errorf("psrp: reap after must not be negative (got %s)", c.ReapAfter)
+	}
+	switch c.LanguageMode {
+	case "", "full", "constrained":
+	default:
+		return fmt.Errorf("psrp: language_mode must be \"full\" or \"constrained\" (got %q)", c.LanguageMode)
 	}
 	return nil
 }

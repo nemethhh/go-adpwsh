@@ -55,6 +55,10 @@ const (
 	// KindTooManyResults means a search matched more than its size limit. It is
 	// never retried; the caller narrows the filter or raises the limit.
 	KindTooManyResults
+	// KindUnsupported means the operation cannot run against this transport's
+	// endpoint — e.g. an ACL op against a ConstrainedLanguage endpoint, whose
+	// .NET DirectoryServices calls are unavailable. Never retried.
+	KindUnsupported
 )
 
 func (k Kind) String() string {
@@ -83,6 +87,8 @@ func (k Kind) String() string {
 		return "replication wait timed out"
 	case KindTooManyResults:
 		return "too many results"
+	case KindUnsupported:
+		return "unsupported by this endpoint"
 	default:
 		return "unknown"
 	}
@@ -168,6 +174,7 @@ var (
 	ErrSchema           error = kindSentinel{KindSchema}
 	ErrReplication      error = kindSentinel{KindReplication}
 	ErrTooManyResults   error = kindSentinel{KindTooManyResults}
+	ErrUnsupported      error = kindSentinel{KindUnsupported}
 )
 
 func shortTypeName(full string) string {

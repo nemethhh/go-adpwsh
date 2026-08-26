@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
-Import-Module ActiveDirectory -ErrorAction Stop
+if (-not (Get-Module ActiveDirectory)) { Import-Module ActiveDirectory -ErrorAction Stop }
 # JSON parsing's hashtable-output switch (see below) needs PowerShell 6+, and
 # operations splat the payload (New-ADOrganizationalUnit @c), which a
 # PSCustomObject cannot do. So the object graph 5.1 returns is converted to
@@ -47,13 +47,18 @@ function Get-AdPropValue($obj, $name) {
     return $null
 }
 
-$p = ConvertTo-AdHashtable ([Console]::In.ReadToEnd() | ConvertFrom-Json)
+$__adRaw = if ($null -ne $__adPayload) { $__adPayload } else { [Console]::In.ReadToEnd() }
+$p = ConvertTo-AdHashtable ($__adRaw | ConvertFrom-Json)
 
 $common = @{}
 if ($p.server) { $common['Server'] = $p.server }
 if ($p.credential) {
-    $secpw = ConvertTo-SecureString $p.credential.password -AsPlainText -Force
-    $common['Credential'] = [System.Management.Automation.PSCredential]::new($p.credential.username, $secpw)
+    if (Get-Command New-TfCredential -ErrorAction SilentlyContinue) {
+        $common['Credential'] = New-TfCredential $p.credential.username $p.credential.password
+    } else {
+        $secpw = ConvertTo-SecureString $p.credential.password -AsPlainText -Force
+        $common['Credential'] = [System.Management.Automation.PSCredential]::new($p.credential.username, $secpw)
+    }
 }
 $credOnly = @{}
 if ($common.ContainsKey('Credential')) { $credOnly['Credential'] = $common['Credential'] }
@@ -188,7 +193,7 @@ function Test-AdPresence($id) {
     } catch {
         return [ordered]@{
             found     = $false
-            type      = $_.Exception.GetType().FullName
+            type      = $_.Exception.psobject.TypeNames[0]
             errorCode = (Get-AdPropValue $_.Exception 'ErrorCode')
             message   = $_.Exception.Message
         }
@@ -216,7 +221,7 @@ try {
     $out = @{ ok = $true; data = $data }
 } catch {
     $out = @{ ok = $false; error = @{
-        type               = $_.Exception.GetType().FullName
+        type               = $_.Exception.psobject.TypeNames[0]
         message            = $_.Exception.Message
         category           = $_.CategoryInfo.Category.ToString()
         targetName         = $_.CategoryInfo.TargetName

@@ -31,6 +31,12 @@ func (c *core) exec(ctx context.Context, op string, payload map[string]any, out 
 		payload = map[string]any{}
 	}
 	payload["op"] = op
+	if isACLOp(op) {
+		if cr, ok := c.tr.(interface{ Constrained() bool }); ok && cr.Constrained() {
+			return &Error{Kind: KindUnsupported, Op: op, Err: errors.New(
+				`ACL delegation requires a full-language endpoint; set the psrp transport's language_mode to "full" (or manage the delegation out-of-band)`)}
+		}
+	}
 	if c.server != "" {
 		payload["server"] = c.server
 	}
@@ -84,6 +90,13 @@ func (c *core) exec(ctx context.Context, op string, payload map[string]any, out 
 		}
 	}
 	return lastErr
+}
+
+// isACLOp reports whether op is one of the ACL delegation ops, whose
+// implementation on the jump box calls into .NET DirectoryServices ACL
+// classes that a ConstrainedLanguage endpoint cannot construct.
+func isACLOp(op string) bool {
+	return op == adscript.OpACLRead || op == adscript.OpACLGrant || op == adscript.OpACLRevoke
 }
 
 // backoff sleeps for the attempt's exponential delay, jittered, and honours

@@ -2,7 +2,7 @@
     $out = @{ ok = $true; data = $data }
 } catch {
     $out = @{ ok = $false; error = @{
-        type               = $_.Exception.GetType().FullName
+        type               = $_.Exception.psobject.TypeNames[0]
         message            = $_.Exception.Message
         category           = $_.CategoryInfo.Category.ToString()
         targetName         = $_.CategoryInfo.TargetName

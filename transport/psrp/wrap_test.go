@@ -26,7 +26,7 @@ func encode(s string) string {
 }
 
 func TestBuildWrapperDeliversPayloadAndPreload(t *testing.T) {
-	w := buildWrapper("Get-ADDomain", []byte(`{"server":null}`))
+	w := buildWrapper("Get-ADDomain", []byte(`{"server":null}`), false)
 	// payload arrives as base64 inside a SetIn call
 	if !strings.Contains(w, base64.StdEncoding.EncodeToString([]byte(`{"server":null}`))) {
 		t.Error("wrapper missing base64 payload")
@@ -43,6 +43,26 @@ func TestBuildWrapperDeliversPayloadAndPreload(t *testing.T) {
 	// SetIn must precede the script
 	if strings.Index(w, "SetIn") > strings.Index(w, "Get-ADDomain") {
 		t.Error("SetIn must come before the script")
+	}
+}
+
+func TestBuildWrapperConstrained(t *testing.T) {
+	w := buildWrapper("SCRIPT", []byte(`{"a":"it's"}`), true)
+	if strings.Contains(w, "[Console]::SetIn") || strings.Contains(w, "LoadFrom") {
+		t.Errorf("constrained wrapper must not use [Console]::SetIn or LoadFrom:\n%s", w)
+	}
+	if !strings.Contains(w, `$__adPayload = '{"a":"it''s"}'`) {
+		t.Errorf("constrained wrapper must set $__adPayload with '' escaped:\n%s", w)
+	}
+	if !strings.HasSuffix(w, "SCRIPT") {
+		t.Errorf("script must follow the payload assignment:\n%s", w)
+	}
+}
+
+func TestBuildWrapperFullUnchanged(t *testing.T) {
+	w := buildWrapper("SCRIPT", []byte(`{}`), false)
+	if !strings.Contains(w, "[Console]::SetIn") {
+		t.Errorf("full wrapper must keep [Console]::SetIn delivery:\n%s", w)
 	}
 }
 

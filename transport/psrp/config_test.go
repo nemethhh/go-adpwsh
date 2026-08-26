@@ -95,3 +95,28 @@ func TestValidate(t *testing.T) {
 		t.Error("negative reap after: want error, got nil")
 	}
 }
+
+func TestConfigLanguageMode(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		mode        string
+		wantErr     bool
+		constrained bool
+	}{
+		{"empty is full", "", false, false},
+		{"full", "full", false, false},
+		{"constrained", "constrained", false, true},
+		{"invalid", "nolanguage", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Config{Host: "h", LanguageMode: tc.mode}
+			err := c.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() err=%v, wantErr=%v", err, tc.wantErr)
+			}
+			if !tc.wantErr && c.Constrained() != tc.constrained {
+				t.Errorf("Constrained()=%v, want %v", c.Constrained(), tc.constrained)
+			}
+		})
+	}
+}
