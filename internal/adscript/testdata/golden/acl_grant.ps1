@@ -53,12 +53,12 @@ $p = ConvertTo-AdHashtable ($__adRaw | ConvertFrom-Json)
 $common = @{}
 if ($p.server) { $common['Server'] = $p.server }
 if ($p.credential) {
-    if (Get-Command New-TfCredential -ErrorAction SilentlyContinue) {
-        $common['Credential'] = New-TfCredential $p.credential.username $p.credential.password
-    } else {
-        $secpw = ConvertTo-SecureString $p.credential.password -AsPlainText -Force
-        $common['Credential'] = [System.Management.Automation.PSCredential]::new($p.credential.username, $secpw)
-    }
+    # PSCredential and SecureString are on ConstrainedLanguage's allowed ("core")
+    # type list, so this constructor runs unchanged under a constrained endpoint
+    # too (lab-verified) -- no endpoint helper function is needed. Only the
+    # ConvertTo-SecureString cmdlet must be visible there.
+    $secpw = ConvertTo-SecureString $p.credential.password -AsPlainText -Force
+    $common['Credential'] = [System.Management.Automation.PSCredential]::new($p.credential.username, $secpw)
 }
 $credOnly = @{}
 if ($common.ContainsKey('Credential')) { $credOnly['Credential'] = $common['Credential'] }
