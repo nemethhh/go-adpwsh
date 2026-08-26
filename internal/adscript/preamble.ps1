@@ -193,7 +193,7 @@ function Test-AdPresence($id) {
     } catch {
         return [ordered]@{
             found     = $false
-            type      = $_.Exception.GetType().FullName
+            type      = $_.Exception.psobject.TypeNames[0]
             errorCode = (Get-AdPropValue $_.Exception 'ErrorCode')
             message   = $_.Exception.Message
         }
