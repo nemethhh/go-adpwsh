@@ -7,23 +7,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"unicode/utf16"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
 	psrp "github.com/smnsjas/go-psrp/client"
 	"github.com/smnsjas/go-psrp/wsman"
 )
-
-// encode mimics how go-adpwsh produces an -EncodedCommand: UTF-16LE then base64.
-func encode(s string) string {
-	u := utf16.Encode([]rune(s))
-	b := make([]byte, len(u)*2)
-	for i, r := range u {
-		b[2*i] = byte(r)
-		b[2*i+1] = byte(r >> 8)
-	}
-	return base64.StdEncoding.EncodeToString(b)
-}
 
 func TestBuildWrapperDeliversPayloadAndPreload(t *testing.T) {
 	w := buildWrapper("Get-ADDomain", []byte(`{"server":null}`), false)
@@ -140,36 +128,6 @@ func TestMapExecuteErrorNeverRetriesContextError(t *testing.T) {
 		}
 		if e.Kind == adpwsh.KindTransient {
 			t.Errorf("mapExecuteError(%v) = KindTransient; a context error is not provably pre-execution and must never be retryable", ctxErr)
-		}
-	}
-}
-
-// TestIsCallerTimeout pins the second, independent classification Run needs
-// alongside mapExecuteError's Kind: whether a failure means the shell is
-// dead. A context error must answer false here even though mapExecuteError
-// makes it non-retryable — the two questions are deliberately decoupled
-// (see isCallerTimeout's doc and Run's call site). A sentinel or an
-// unrelated transport error must also answer false: neither is a context
-// error, so this function has nothing to say about them one way or the
-// other — Run's own invalidate-or-not branching handles those cases through
-// other means.
-func TestIsCallerTimeout(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"nil", nil, false},
-		{"bare context.DeadlineExceeded", context.DeadlineExceeded, true},
-		{"bare context.Canceled", context.Canceled, true},
-		{"wrapped deadline (prepare pipeline: %w)", fmt.Errorf("prepare pipeline: %w", context.DeadlineExceeded), true},
-		{"wrapped cancellation (prepare pipeline: %w)", fmt.Errorf("prepare pipeline: %w", context.Canceled), true},
-		{"ErrQueueFull is not a context error", psrp.ErrQueueFull, false},
-		{"unrelated transport error", errors.New("dial tcp: connection refused"), false},
-	}
-	for _, tc := range cases {
-		if got := isCallerTimeout(tc.err); got != tc.want {
-			t.Errorf("%s: isCallerTimeout = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

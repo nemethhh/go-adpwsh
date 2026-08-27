@@ -1,7 +1,6 @@
 package psrp
 
 import (
-	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -94,8 +93,9 @@ func exitCode(hadErrors bool) int {
 // standing between one execution and up to Retry.MaxAttempts of them.
 //
 // This Kind answers only "is it safe to retry?" (no, for a context error).
-// It deliberately does not answer "is the shell dead?" — see
-// isCallerTimeout, which Run consults separately for that second question.
+// It deliberately does not answer "is the shell dead?" — warm's isCallerTimeout
+// (internal/warm) is what the pool's Run consults separately for that second
+// question.
 func mapExecuteError(err error) error {
 	switch {
 	case errors.Is(err, psrp.ErrQueueFull),
@@ -112,27 +112,6 @@ func mapExecuteError(err error) error {
 		// retryable case loses one retry; failing open loses data.
 		return &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
 	}
-}
-
-// isCallerTimeout reports whether err is a context cancellation or deadline,
-// unwrapped to any depth. mapExecuteError already answers whether this is
-// safe to retry (no); this answers the second, independent question Run
-// asks of a failed Execute: does it mean the shell is dead? It does not. A
-// context error says only that the caller (or an ancestor context) stopped
-// waiting — it carries no information about whether the shell that was
-// mid-request is still alive. The shell is, if anything, probably still
-// good: the caller gave up, the server did not refuse anything.
-//
-// This distinction has a real cost if ignored, not just a theoretical one.
-// Treating a context error as evidence of a dead shell would invalidate a
-// conn that is probably fine, undoing the shell-leak fix Config.IdleTimeout
-// exists for: the discarded client is never closed by this package, only
-// left to expire on its own lease (Config.IdleTimeout, 2 minutes by
-// default), and its replacement pays the cost this package works hard to
-// avoid paying twice — reimporting the AD module (roughly 366ms) on first
-// use. A timeout is not rare enough for that to be a rounding error.
-func isCallerTimeout(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // deadShellRetryExhaustedMessage is startPipeline's own literal (client.go,
@@ -166,9 +145,9 @@ const preparePipelineWrapMarker = "prepare pipeline: "
 // when the shell behind a pooled conn no longer exists — idle-timeout reaped,
 // or the host's WinRM service was restarted. go-psrp's own Client keeps
 // believing it is connected in this situation (nothing resets its internal
-// `connected` flag; see conn.invalidate in psrp.go), so every attempt to
-// start a pipeline in that dead shell fails before the script runs. Run
-// treats this, and only this, as safe to retry once against a freshly
+// `connected` flag; see conn.invalidate in internal/warm), so every attempt to
+// start a pipeline in that dead shell fails before the script runs. The pool's
+// Run treats this, and only this, as safe to retry once against a freshly
 // rebuilt client.
 //
 // Two checks, and the fault one is a conjunction, not a single signal:

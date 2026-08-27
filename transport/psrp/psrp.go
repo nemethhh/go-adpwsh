@@ -2,117 +2,16 @@ package psrp
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sync"
-	"time"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
-	"github.com/nemethhh/go-adpwsh/internal/adscript"
+	warm "github.com/nemethhh/go-adpwsh/internal/warm"
 	psrp "github.com/smnsjas/go-psrp/client"
 )
 
-// executor is the subset of *psrp.Client the transport uses. It exists so the
-// pool/wrapper/reassembly logic is unit-testable with fakes, needing no WinRM.
-type executor interface {
-	Connect(ctx context.Context) error
-	Execute(ctx context.Context, script string) (*psrp.Result, error)
-	Close(ctx context.Context) error
-}
-
-// conn is one pooled client plus its lazy-connect state. Each conn is a separate
-// go-psrp client = separate wsmprovhost process = separate [Console], which is
-// what makes concurrent Runs safe (SetIn is process-global).
-type conn struct {
-	build func() (executor, error) // rebuilds a fresh executor; see invalidate
-	exec  executor
-	mu    sync.Mutex
-	up    bool
-	// lastUsed is stamped by Run when it returns this conn to the idle pool
-	// (success or failure — either way, this conn was just held and acted
-	// on). The idle-shell reaper (reapIdle) reads it to decide whether a
-	// conn resting in the pool has gone unused long enough to release its
-	// shell; see Config.ReapAfter and Transport.reapLoop.
-	lastUsed time.Time
-}
-
-func (c *conn) ensureConnected(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.up {
-		return nil
-	}
-	if err := c.exec.Connect(ctx); err != nil {
-		return &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Connect", Err: err}
-	}
-	c.up = true
-	return nil
-}
-
-// invalidate discards the dead client behind conn and replaces it with a
-// freshly built one, then marks the conn as needing to (re)connect. Call it
-// only when the shell itself is actually suspect: a dead or reaped shell
-// must not go on reporting itself connected, or every later Run through this
-// pooled conn would fail for the life of the process. Two different failure
-// classes must NOT reach this call, for two different reasons: a busy-queue
-// sentinel (KindTransient; see mapExecuteError) means the shell is fine and
-// nothing was even attempted, and a context cancellation or deadline
-// (KindTransport, but see isCallerTimeout) means the caller gave up — that
-// says nothing about the shell either. Run's call site checks both before
-// invalidating.
-//
-// Simply flipping a local "connected" flag is not enough: go-psrp's own
-// Client tracks its own internal connected state, set only by a successful
-// Connect and cleared only by Disconnect or Close (verified against
-// client/client.go) — nothing in a failed Execute call resets it, so the same
-// Client object would go on reporting itself connected forever even though
-// its shell is gone, and a later Connect on it is a silent no-op. Close is
-// not a fix either: it permanently sets the client's internal closed flag,
-// which then makes any future Connect on that same object fail outright
-// ("client is closed") — verified against client/client.go's
-// CloseWithStrategy and connectInternal. Recovery therefore has to build a
-// brand-new client, not Close-then-Connect the old one. The dead client's
-// shell is already gone server-side, so there is nothing left to gracefully
-// close; the old client is simply dropped (psrp.New does no network I/O, so
-// building its replacement here is cheap).
-func (c *conn) invalidate() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if fresh, err := c.build(); err == nil {
-		c.exec = fresh
-	}
-	// If build itself fails, keep the old (dead) exec: ensureConnected will
-	// try it again and Execute will fail the same way, surfacing a clear
-	// error rather than leaving the conn in a half-built state.
-	c.up = false
-}
-
-// Transport runs go-adpwsh commands over PSRP/WinRM via a checkout pool of
-// independent clients. It satisfies adpwsh.Transport.
-type Transport struct {
-	cfg  Config
-	idle chan *conn // buffered to Concurrency; every Run checks one out and returns it
-
-	closeOnce sync.Once
-	closeErr  error
-
-	// reapStop/reapDone bracket the lifetime of the one background goroutine
-	// this Transport runs (reapLoop, in reap.go): Close closes reapStop to
-	// ask it to exit, then blocks on reapDone until it actually has. Both
-	// are nil on a Transport built directly by a test that bypasses New (as
-	// several fake-backed suites in this package do) — Close guards against
-	// that so it stays callable there too, consistent with Close already
-	// being a safe no-op when there is nothing to do.
-	reapStop chan struct{}
-	reapDone chan struct{}
-}
-
-var _ adpwsh.Transport = (*Transport)(nil)
-
 // buildPSRPConfig translates our Config into the go-psrp client Config. It is
-// split out from newClient — which only returns the executor interface,
-// hiding the concrete config — so a test can inspect exactly what gets sent
-// over the wire, in particular the IdleTimeout translation below.
+// split out from newClient so a test can inspect exactly what gets sent over
+// the wire, in particular the IdleTimeout translation below.
 func buildPSRPConfig(cfg Config) psrp.Config {
 	pc := psrp.DefaultConfig()
 	pc.Port = cfg.Port
@@ -141,54 +40,21 @@ func buildPSRPConfig(cfg Config) psrp.Config {
 
 // newClient builds one go-psrp client with a single runspace. Concurrency comes
 // from the pool of clients, never from MaxRunspaces (which would race on SetIn).
-func newClient(cfg Config) (executor, error) {
+func newClient(cfg Config) (*psrp.Client, error) {
 	pc := buildPSRPConfig(cfg)
 	return psrp.New(cfg.Host, pc)
 }
 
-// New validates the configuration, then builds the client pool. It does not
-// dial; each client connects lazily the first time it is checked out, so the
-// operation ctx governs the dial and a transient failure does not permanently
-// poison that client.
-func New(cfg Config) (*Transport, error) {
-	if err := cfg.Validate(); err != nil {
-		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "psrp.New", Err: err}
-	}
-	cfg = cfg.WithDefaults()
-	t := &Transport{
-		cfg:      cfg,
-		idle:     make(chan *conn, cfg.Concurrency),
-		reapStop: make(chan struct{}),
-		reapDone: make(chan struct{}),
-	}
-	// One build closure shared by every pooled conn: same cfg each time, so
-	// invalidate can rebuild a conn's client without the Transport needing to
-	// hold onto anything beyond cfg itself.
-	build := func() (executor, error) { return newClient(cfg) }
-	for i := 0; i < cfg.Concurrency; i++ {
-		c, err := build()
-		if err != nil {
-			return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "psrp.New", Err: err}
-		}
-		t.idle <- &conn{exec: c, build: build}
-	}
-	// The pool's only background activity: it releases shells this package
-	// opened but that nothing else ever tears down (see reap.go). Started
-	// only once every conn is already sitting in t.idle, so it can never
-	// race the population loop above.
-	go t.reapLoop()
-	return t, nil
-}
+// psrpExecutor adapts a go-psrp client to warm.Executor, mapping *psrp.Result
+// into a neutral adpwsh.Result. This is the only place go-psrp's Result is seen.
+type psrpExecutor struct{ client *psrp.Client }
 
-// runOnce connects conn c if needed and executes one already-wrapped script,
-// classifying any Execute failure through mapExecuteError.
-func runOnce(ctx context.Context, c *conn, wrapped string) (adpwsh.Result, error) {
-	if err := c.ensureConnected(ctx); err != nil {
-		return adpwsh.Result{}, err
-	}
-	res, err := c.exec.Execute(ctx, wrapped)
+func (e *psrpExecutor) Connect(ctx context.Context) error { return e.client.Connect(ctx) }
+
+func (e *psrpExecutor) Execute(ctx context.Context, wrapped string) (adpwsh.Result, error) {
+	res, err := e.client.Execute(ctx, wrapped)
 	if err != nil {
-		return adpwsh.Result{}, mapExecuteError(err)
+		return adpwsh.Result{}, err // raw; warm classifies via winrmClassifier
 	}
 	return adpwsh.Result{
 		Stdout:   joinObjects(res.Output),
@@ -197,153 +63,58 @@ func runOnce(ctx context.Context, c *conn, wrapped string) (adpwsh.Result, error
 	}, nil
 }
 
-// Constrained reports whether this endpoint runs in ConstrainedLanguage mode.
-// core.exec uses this (via an optional interface) to refuse the ACL ops.
-func (t *Transport) Constrained() bool { return t.cfg.Constrained() }
+func (e *psrpExecutor) Close(ctx context.Context) error { return e.client.Close(ctx) }
 
-// Run implements adpwsh.Transport.
-func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []byte) (adpwsh.Result, error) {
-	var c *conn
-	select {
-	case c = <-t.idle:
-		// Stamped on the way back in, not at checkout, and unconditionally
-		// (success or failure): the reaper's idle clock should measure time
-		// since this conn was last actually acted on, not time since it was
-		// last handed out — a Run in flight is never "idle" in the sense the
-		// reaper cares about, but it also holds no lock on lastUsed while
-		// running, so there is nothing for the reaper to race here (it can't
-		// see this conn at all until this defer returns it to t.idle).
-		defer func() {
-			c.mu.Lock()
-			c.lastUsed = time.Now()
-			c.mu.Unlock()
-			t.idle <- c
-		}()
-	case <-ctx.Done():
-		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransient, Op: "Run", Err: ctx.Err()}
-	}
+// winrmClassifier injects the WinRM/go-psrp error detection into warm's policy.
+// warm owns the retry policy; this owns the transport-specific detection.
+type winrmClassifier struct{}
 
-	script, err := adscript.DecodeCommand(encodedCommand)
-	if err != nil {
-		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "Run", Err: err}
-	}
-	wrapped := buildWrapper(script, payload, t.cfg.Constrained())
+func (winrmClassifier) MapError(err error) error { return mapExecuteError(err) }
+func (winrmClassifier) DeadShell(err error) bool { return isDeadShellFailure(err) }
 
-	// A plain Connect failure is deliberately not run through
-	// invalidate/retry below: ensureConnected already leaves c.up false on
-	// failure, so the next checkout retries Connect on this very client —
-	// go-psrp only short-circuits Connect when it already believes itself
-	// connected (see connectInternal), so a Connect failure never leaves a
-	// client stuck reporting false confidence the way a dead-shell Execute
-	// failure does. Nothing here needs rebuilding.
-	if err := c.ensureConnected(ctx); err != nil {
-		return adpwsh.Result{}, err
-	}
-
-	res, execErr := c.exec.Execute(ctx, wrapped)
-	if execErr == nil {
-		return adpwsh.Result{
-			Stdout:   joinObjects(res.Output),
-			Stderr:   joinObjects(res.Errors),
-			ExitCode: exitCode(res.HadErrors),
-		}, nil
-	}
-
-	mapped := mapExecuteError(execErr)
-	var ae *adpwsh.Error
-	if !errors.As(mapped, &ae) || ae.Kind == adpwsh.KindTransient {
-		// A busy queue: the shell is fine, and the caller will simply try
-		// again later. Leave the conn exactly as it was — tearing down a
-		// good shell here would be a performance regression, not a fix.
-		return adpwsh.Result{}, mapped
-	}
-
-	if isCallerTimeout(execErr) {
-		// KindTransport (mapExecuteError already refused to call this
-		// retryable), but that is a "safe to retry?" answer, not a "is the
-		// shell dead?" one — see isCallerTimeout's doc. The caller gave up;
-		// the shell is probably still good. Invalidating here would tear
-		// down a live client on every timeout and leak it for up to
-		// Config.IdleTimeout, undoing the shell-leak fix. Leave the conn
-		// alone, exactly as for the transient sentinels above.
-		return adpwsh.Result{}, mapped
-	}
-
-	// Anything else means the shell itself is suspect (dead, reaped, or the
-	// host restarted WinRM). Rebuild the conn unconditionally so a LATER,
-	// unrelated Run never inherits a permanently poisoned client — this must
-	// happen even for a failure class we choose not to retry below.
-	c.invalidate()
-
-	if !isDeadShellFailure(execErr) {
-		// Not confirmed to be a pipeline-start failure (see
-		// isDeadShellFailure): the script may already have reached Active
-		// Directory, so retrying this specific operation is not safe. The
-		// conn is already fixed for whatever the caller tries next.
-		return adpwsh.Result{}, mapped
-	}
-
-	// Exactly one retry, against the freshly rebuilt conn — never a loop: this
-	// is the only call to runOnce here, and whatever it returns goes straight
-	// back to the caller with no further branching. If the rebuilt client
-	// also fails non-transiently, runOnce leaves this conn with c.up == true
-	// (ensureConnected succeeded) pointing at a client that just failed to
-	// Execute; that is intentionally left alone rather than invalidated again
-	// here. It self-heals: the conn goes back to the idle channel via the
-	// defer above, and the next Run through it re-triages from the top of
-	// this function, invalidating it (again) if it is still bad.
-	return runOnce(ctx, c, wrapped)
+// Transport is the WinRM warm transport: a warm.Pool plus the Constrained()
+// signal the top-level client probes for. Run/Close are the embedded pool's.
+type Transport struct {
+	*warm.Pool
+	constrained bool
 }
 
-// Close implements adpwsh.Transport. It stops the background reaper, then
-// drains and closes every pooled client; it assumes no Run is in flight (the
-// provider closes at shutdown). Close is idempotent: a repeated call is a
-// safe no-op returning the first call's result, rather than blocking forever
-// on an already-drained idle channel.
-func (t *Transport) Close() error {
-	t.closeOnce.Do(func() {
-		if t.reapStop != nil {
-			// Stop the reaper and wait for it to actually be gone *before*
-			// touching t.idle at all — this is what makes Close safe against
-			// a sweep still in flight, and it is a bounded wait, not a race,
-			// for two reasons. First, it terminates: reapLoop's outer loop
-			// blocks only in its select on ticker.C/reapStop, never inside
-			// reapIdle itself (every receive from t.idle there is
-			// non-blocking; see reapIdle's own comment) — so the one thing
-			// that can delay the goroutine noticing the closed reapStop is a
-			// sweep already in progress, and that sweep is bounded by
-			// however long its in-flight conn.exec.Close(ctx) calls take,
-			// each itself bounded by cfg.Timeout. Second, it is necessary:
-			// without it, this drain loop below (a fixed Concurrency
-			// receives) could interleave with the reaper's own receives from
-			// the same channel. Channel semantics mean a given *conn always
-			// goes to exactly one of them — never a double-close of one
-			// conn's exec — but the drain loop could still finish having
-			// permanently removed fewer than Concurrency live conns (one was
-			// mid-sweep, about to be returned to a channel this loop has
-			// already stopped reading), silently under-closing the pool.
-			// Waiting for reapDone guarantees every conn the reaper ever
-			// took is back in t.idle before the drain below reads a single
-			// one.
-			close(t.reapStop)
-			<-t.reapDone
+// Constrained reports whether this endpoint runs in ConstrainedLanguage mode.
+// core.exec uses this (via an optional interface) to refuse the ACL ops.
+func (t *Transport) Constrained() bool { return t.constrained }
+
+var _ adpwsh.Transport = (*Transport)(nil)
+
+// New validates the configuration, then builds a warm client pool wired with
+// the WinRM executor, wrapper and classifier. It does not dial; each client
+// connects lazily the first time it is checked out, so the operation ctx
+// governs the dial and a transient failure does not permanently poison that
+// client.
+func New(cfg Config) (*Transport, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "psrp.New", Err: err}
+	}
+	cfg = cfg.WithDefaults()
+	build := func() (warm.Executor, error) {
+		c, err := newClient(cfg)
+		if err != nil {
+			return nil, err
 		}
-		var firstErr error
-		for i := 0; i < t.cfg.Concurrency; i++ {
-			c := <-t.idle
-			c.mu.Lock()
-			up := c.up
-			c.mu.Unlock()
-			if !up {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), t.cfg.Timeout)
-			if err := c.exec.Close(ctx); err != nil && firstErr == nil {
-				firstErr = err
-			}
-			cancel()
-		}
-		t.closeErr = firstErr
+		return &psrpExecutor{client: c}, nil
+	}
+	wrapper := func(script string, payload []byte) string {
+		return buildWrapper(script, payload, cfg.Constrained())
+	}
+	pool, err := warm.New(warm.Params{
+		Concurrency: cfg.Concurrency,
+		Timeout:     cfg.Timeout,
+		ReapAfter:   cfg.ReapAfter,
+		Build:       build,
+		Wrapper:     wrapper,
+		Classifier:  winrmClassifier{},
 	})
-	return t.closeErr
+	if err != nil {
+		return nil, err
+	}
+	return &Transport{Pool: pool, constrained: cfg.Constrained()}, nil
 }
