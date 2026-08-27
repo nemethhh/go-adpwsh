@@ -7,8 +7,8 @@ import (
 	adpwsh "github.com/nemethhh/go-adpwsh"
 )
 
-// fakeExec is a scriptable Executor. connectErr/execResult/execErr drive one
-// call each; callsMu-guarded counters let tests assert checkout spread.
+// fakeExec is a scriptable Executor. connectErr/result/execErr drive one call
+// each; mu-guarded counters let tests assert checkout spread.
 type fakeExec struct {
 	id         int
 	mu         sync.Mutex
@@ -18,6 +18,11 @@ type fakeExec struct {
 	connectErr error
 	result     adpwsh.Result
 	execErr    error
+
+	// arrived/release, when non-nil, let a test gate concurrency: Execute
+	// signals arrival then blocks until release is closed.
+	arrived chan struct{}
+	release chan struct{}
 }
 
 func (f *fakeExec) Connect(context.Context) error {
@@ -28,8 +33,15 @@ func (f *fakeExec) Connect(context.Context) error {
 }
 func (f *fakeExec) Execute(context.Context, string) (adpwsh.Result, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.executes++
+	arrived, release := f.arrived, f.release
+	f.mu.Unlock()
+	if arrived != nil {
+		arrived <- struct{}{}
+		<-release
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.result, f.execErr
 }
 func (f *fakeExec) Close(context.Context) error {
