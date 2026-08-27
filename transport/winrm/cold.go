@@ -2,64 +2,70 @@ package winrm
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"time"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
-	psrp "github.com/smnsjas/go-psrp/client"
 )
 
-// coldCommandCeiling bounds the re-encoded command handed to WinRS. A
-// cmd.exe-backed WinRS caps the command line near 8191 chars; base64-of-UTF16
-// is ~2.7x the source, and the wrapped script (SetIn payload + preload + op)
-// grows further. This is the "winrm+cold cannot do large ops" limit — warm has
-// none. Matches the ssh transport's largeCommandThreshold intent.
-const coldCommandCeiling = 7000
+// coldBootstrap is the tiny script handed to `<pwsh> -EncodedCommand`. It reads
+// the real operation off stdin (the wrapped script, delivered by ColdTransport)
+// and runs it. Keeping the command line to this fixed bootstrap is what lets
+// winrm+cold carry an arbitrarily large op with NO command-size limit: the op
+// rides stdin, never the command line. The wrapped script's own
+// [Console]::SetIn (from adscript.WrapFullPayload) redirects [Console]::In to
+// the JSON payload before the preamble reads it, so this ReadToEnd of the real
+// stdin and the script's ReadToEnd of the payload do not collide.
+const coldBootstrap = `$s=[Console]::In.ReadToEnd(); Invoke-Expression $s`
 
-// winrsRunner is the subset of *psrp.Client the cold path uses. It exists so the
-// wrap/encode/map/size-guard logic is unit-testable without WinRM.
-type winrsRunner interface {
-	ConnectWSManOnly(ctx context.Context) error
-	ExecuteCmd(ctx context.Context, command string) (*psrp.CmdResult, error)
-	Close(ctx context.Context) error
-}
-
-// ColdTransport runs one fresh WinRS `pwsh -EncodedCommand` per operation over
-// WSMan. No persistent runspace — the slowest WinRM mode; use warm unless you
-// specifically need no server-side shell. Satisfies adpwsh.Transport.
+// ColdTransport runs one fresh WinRS shell per operation over WSMan, feeding the
+// wrapped op script on stdin to a `<pwsh> -EncodedCommand <bootstrap>` process.
+// No persistent runspace -- the slowest WinRM mode; use warm unless you
+// specifically need no server-side PowerShell session configuration (e.g. a host
+// where PSRP endpoints are disabled but WinRS command execution is allowed).
+// Satisfies adpwsh.Transport.
 type ColdTransport struct {
-	runner  winrsRunner
-	pwsh    string
+	exec    coldExecutor
 	timeout time.Duration
 	sem     chan struct{}
-
-	connOnce sync.Once
-	connErr  error
 }
 
-// NewCold builds a WSMan-only go-psrp client from cfg for cold WinRS execution.
+// NewCold builds a cold WinRS transport from cfg. The transport authenticates to
+// WinRS as cfg.Username (the transport identity, which needs WinRS shell access
+// -- Remote Management Users / an admin; distinct from domain.Credential, the AD
+// identity delivered in the payload).
 func NewCold(cfg Config) (*ColdTransport, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "winrm.NewCold", Err: err}
 	}
 	cfg = cfg.WithDefaults()
-	client, err := newClient(cfg) // shared with the warm path (buildPSRPConfig + psrp.New)
+	et, err := newEndTransport(cfg)
 	if err != nil {
 		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "winrm.NewCold", Err: err}
+	}
+	// Windows PowerShell 5.1 is the always-present engine and the one the script
+	// layer targets; it is the right default for the "PSRP disabled, WinRS
+	// allowed" host cold exists for. cfg.PwshPath overrides (e.g. "pwsh").
+	pwsh := cfg.PwshPath
+	if pwsh == "" || pwsh == "pwsh" {
+		pwsh = "powershell.exe"
 	}
 	conc := cfg.Concurrency
 	if conc <= 0 {
 		conc = 4
 	}
-	pwsh := cfg.PwshPath
-	if pwsh == "" {
-		pwsh = "pwsh"
-	}
-	return &ColdTransport{runner: client, pwsh: pwsh, timeout: cfg.Timeout, sem: make(chan struct{}, conc)}, nil
+	return &ColdTransport{
+		exec:    &winrsColdExecutor{et: et, pwsh: pwsh, timeout: cfg.Timeout},
+		timeout: cfg.Timeout,
+		sem:     make(chan struct{}, conc),
+	}, nil
 }
 
+// Run decodes the encoded command back to script, wraps it with the payload
+// (adscript.WrapFullPayload -- the same [Console]::SetIn delivery the warm path
+// uses), and hands the wrapped script to the executor over stdin. There is no
+// command-size guard: unlike the WinRS/cmd.exe command line (~8191 chars), stdin
+// has no length limit.
 func (t *ColdTransport) Run(ctx context.Context, encodedCommand string, payload []byte) (adpwsh.Result, error) {
 	select {
 	case t.sem <- struct{}{}:
@@ -72,31 +78,12 @@ func (t *ColdTransport) Run(ctx context.Context, encodedCommand string, payload 
 	if err != nil {
 		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "winrm.cold.Run", Err: err}
 	}
-	reenc := adscript.EncodeCommand(adscript.WrapFullPayload(script, payload))
-	if len(reenc) >= coldCommandCeiling {
-		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "winrm.cold.Run",
-			Err: fmt.Errorf("operation too large for winrm cold mode (%d-char command exceeds the WinRS limit); use `mode = \"warm\"`, which has no command-size limit", len(reenc))}
-	}
-	cmd := `"` + t.pwsh + `" -NoProfile -NonInteractive -EncodedCommand ` + reenc
-
-	t.connOnce.Do(func() { t.connErr = t.runner.ConnectWSManOnly(ctx) })
-	if t.connErr != nil {
-		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "winrm.cold.Run", Err: t.connErr}
-	}
-
-	res, err := t.runner.ExecuteCmd(ctx, cmd)
-	if err != nil {
-		return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "winrm.cold.Run", Err: err}
-	}
-	// A non-zero exit is data the envelope parser decides on, exactly like the
-	// other cold transports.
-	return adpwsh.Result{Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode}, nil
+	wrapped := adscript.WrapFullPayload(script, payload)
+	return t.exec.exec(ctx, adscript.EncodeCommand(coldBootstrap), []byte(wrapped))
 }
 
 func (t *ColdTransport) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), t.timeout)
-	defer cancel()
-	return t.runner.Close(ctx)
+	return t.exec.close()
 }
 
 var _ adpwsh.Transport = (*ColdTransport)(nil)
