@@ -52,6 +52,11 @@ type Config struct {
 	// truncation-to-zero failure mode to floor against — Validate rejecting a
 	// negative value is the only guard this field needs.
 	ReapAfter time.Duration
+	// PwshPath names the PowerShell executable the cold WinRS path invokes on
+	// the command line (`pwsh -EncodedCommand ...`). The warm path never needs
+	// it — the WSMan session configuration launches the host — so it defaults to
+	// "pwsh" and only the cold transport (cold.go) reads it.
+	PwshPath string
 }
 
 func (c Config) WithDefaults() Config {
