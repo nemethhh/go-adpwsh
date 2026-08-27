@@ -54,35 +54,52 @@ func New(cfg Config) (*Transport, error) {
 	return t, nil
 }
 
+// Dial validates cfg and connects to the jump box, returning a live client.
+// It is shared with transport/sshwarm, which needs the same auth/host-key
+// handling to open its subsystem channel. cfg is validated and defaulted here
+// (WithDefaults is idempotent, so callers that already defaulted are safe).
+func Dial(cfg Config) (*ssh.Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "ssh.Dial", Err: err}
+	}
+	cfg = cfg.WithDefaults()
+
+	auth, err := cfg.authMethods()
+	if err != nil {
+		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "ssh.Dial", Err: err}
+	}
+	hostKey, err := cfg.hostKeyCallback()
+	if err != nil {
+		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "ssh.Dial", Err: err}
+	}
+
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	client, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		User:            cfg.User,
+		Auth:            auth,
+		HostKeyCallback: hostKey,
+		Timeout:         cfg.Timeout,
+	})
+	if err != nil {
+		return nil, &adpwsh.Error{
+			Kind: adpwsh.KindTransport,
+			Op:   "ssh.Dial",
+			Err:  fmt.Errorf("cannot connect to %s as %s: %w", addr, cfg.User, err),
+		}
+	}
+	return client, nil
+}
+
+// dial returns the transport's cached client, dialling once on first use.
 func (t *Transport) dial() (*ssh.Client, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.client != nil {
 		return t.client, nil
 	}
-
-	auth, err := t.cfg.authMethods()
+	client, err := Dial(t.cfg)
 	if err != nil {
-		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "ssh.New", Err: err}
-	}
-	hostKey, err := t.cfg.hostKeyCallback()
-	if err != nil {
-		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "ssh.New", Err: err}
-	}
-
-	addr := net.JoinHostPort(t.cfg.Host, strconv.Itoa(t.cfg.Port))
-	client, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
-		User:            t.cfg.User,
-		Auth:            auth,
-		HostKeyCallback: hostKey,
-		Timeout:         t.cfg.Timeout,
-	})
-	if err != nil {
-		return nil, &adpwsh.Error{
-			Kind: adpwsh.KindTransport,
-			Op:   "ssh.New",
-			Err:  fmt.Errorf("cannot connect to %s as %s: %w", addr, t.cfg.User, err),
-		}
+		return nil, err
 	}
 	t.client = client
 	return client, nil
