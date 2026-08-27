@@ -49,7 +49,7 @@ type Opener func(ctx context.Context) (*Channel, error)
 // type, even though Invoke's send often fails only because the shell is dead.
 // Invoke serializes the script and sends the CREATE_PIPELINE message — the
 // actual command — so an error there is not provably pre-execution, and the
-// op may already have reached AD. That mirrors transport/psrp's classifier,
+// op may already have reached AD. That mirrors transport/winrm's classifier,
 // which for the same reason refuses to retry a possibly-sent script.
 type preSendError struct{ err error }
 
@@ -123,7 +123,7 @@ func (e *Executor) Connect(ctx context.Context) error {
 
 // Execute runs one already-wrapped script as a single pipeline and returns the
 // op's stdout (the deserialized PSRP output stream, one object per line, exactly
-// as transport/psrp's joinObjects renders it) so the go-adpwsh envelope parser
+// as transport/winrm's joinObjects renders it) so the go-adpwsh envelope parser
 // above the transport sees identical text on every transport.
 //
 // Failure classification is deliberately conservative for non-idempotent AD
@@ -131,7 +131,7 @@ func (e *Executor) Connect(ctx context.Context) error {
 // NO script — is pre-send (safe to retry). Invoke serializes and sends the
 // script itself, so an Invoke or Wait failure is NOT provably pre-execution and
 // is returned as a plain error: the warm engine invalidates the conn but never
-// retries the op. (See the classifier above and transport/psrp's mapExecuteError
+// retries the op. (See the classifier above and transport/winrm's mapExecuteError
 // for the same reasoning on the WinRM path.)
 func (e *Executor) Execute(ctx context.Context, wrapped string) (adpwsh.Result, error) {
 	pl, err := e.pool.CreatePipeline(wrapped) // sends the Command-creation packet (no script yet)

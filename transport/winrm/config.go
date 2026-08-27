@@ -1,4 +1,4 @@
-package psrp
+package winrm
 
 import (
 	"errors"
@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Config is everything transport/psrp needs to reach a Windows host over
+// Config is everything transport/winrm needs to reach a Windows host over
 // PSRP/WinRM. Password is a plain string, matching transport/ssh; the provider
 // marks it Sensitive and masks it in logs.
 type Config struct {
@@ -110,27 +110,27 @@ func (c Config) Constrained() bool { return c.LanguageMode == "constrained" }
 // later defaults an unset value).
 func (c Config) Validate() error {
 	if c.Host == "" {
-		return errors.New("psrp: host is required")
+		return errors.New("winrm: host is required")
 	}
 	if c.InsecureSkipVerify && !c.UseTLS {
-		return errors.New("psrp: insecure_skip_verify has no effect without use_tls")
+		return errors.New("winrm: insecure_skip_verify has no effect without use_tls")
 	}
 	if c.Concurrency < 0 {
-		return fmt.Errorf("psrp: concurrency must not be negative (got %d)", c.Concurrency)
+		return fmt.Errorf("winrm: concurrency must not be negative (got %d)", c.Concurrency)
 	}
 	if c.Timeout < 0 {
-		return fmt.Errorf("psrp: timeout must not be negative (got %s)", c.Timeout)
+		return fmt.Errorf("winrm: timeout must not be negative (got %s)", c.Timeout)
 	}
 	if c.IdleTimeout < 0 {
-		return fmt.Errorf("psrp: idle timeout must not be negative (got %s)", c.IdleTimeout)
+		return fmt.Errorf("winrm: idle timeout must not be negative (got %s)", c.IdleTimeout)
 	}
 	if c.ReapAfter < 0 {
-		return fmt.Errorf("psrp: reap after must not be negative (got %s)", c.ReapAfter)
+		return fmt.Errorf("winrm: reap after must not be negative (got %s)", c.ReapAfter)
 	}
 	switch c.LanguageMode {
 	case "", "full", "constrained":
 	default:
-		return fmt.Errorf("psrp: language_mode must be \"full\" or \"constrained\" (got %q)", c.LanguageMode)
+		return fmt.Errorf("winrm: language_mode must be \"full\" or \"constrained\" (got %q)", c.LanguageMode)
 	}
 	return nil
 }

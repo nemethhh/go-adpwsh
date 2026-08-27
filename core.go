@@ -34,7 +34,7 @@ func (c *core) exec(ctx context.Context, op string, payload map[string]any, out 
 	if isACLOp(op) {
 		if cr, ok := c.tr.(interface{ Constrained() bool }); ok && cr.Constrained() {
 			return &Error{Kind: KindUnsupported, Op: op, Err: errors.New(
-				`ACL delegation requires a full-language endpoint; set the psrp transport's language_mode to "full" (or manage the delegation out-of-band)`)}
+				`ACL delegation requires a full-language endpoint; set the winrm transport's language_mode to "full" (or manage the delegation out-of-band)`)}
 		}
 	}
 	if c.server != "" {

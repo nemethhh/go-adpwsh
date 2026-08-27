@@ -15,7 +15,7 @@ import (
 // execs round-robin (execs[i % len(execs)]) in the order it is called. It is
 // used only by tests that do not need to observe rebuild counts directly; the
 // invalidate/retry tests below construct their *conn/*Pool by hand instead
-// (mirroring transport/psrp/psrp_test.go), since invalidate() drops the dead
+// (mirroring transport/winrm/winrm_test.go), since invalidate() drops the dead
 // executor and rebuilds via conn.build rather than closing it — closes is not
 // how a rebuild is observed.
 func newTestPool(t *testing.T, execs []*fakeExec, cl Classifier) *Pool {
@@ -45,7 +45,7 @@ func newTestPool(t *testing.T, execs []*fakeExec, cl Classifier) *Pool {
 
 // newDirectPool builds a *Pool around a single hand-built *conn, bypassing
 // New entirely (no background goroutine is started, so there is nothing to
-// Close). This mirrors psrp_test.go's pattern of constructing &Transport{cfg,
+// Close). This mirrors winrm_test.go's pattern of constructing &Transport{cfg,
 // idle} directly so a test can supply its own build closure and inspect
 // exactly how many times it was called.
 func newDirectPool(c *conn, cl Classifier) *Pool {
@@ -97,7 +97,7 @@ func TestInvalidateDisposesOldExecutor(t *testing.T) {
 	}
 }
 
-// mirrors TestRunReassemblesOutput / TestRunHadErrorsExitCode (psrp_test.go):
+// mirrors TestRunReassemblesOutput / TestRunHadErrorsExitCode (winrm_test.go):
 // the pool returns the executor's adpwsh.Result verbatim.
 func TestRunReturnsExecutorResult(t *testing.T) {
 	e := &fakeExec{result: adpwsh.Result{Stdout: "ok", ExitCode: 0}}
@@ -114,7 +114,7 @@ func TestRunReturnsExecutorResult(t *testing.T) {
 	}
 }
 
-// mirrors TestRunExecuteErrorIsTransport (psrp_test.go): a generic
+// mirrors TestRunExecuteErrorIsTransport (winrm_test.go): a generic
 // (non-transient, non-deadshell) Execute error surfaces as KindTransport via
 // the classifier.
 func TestRunExecuteErrorIsTransport(t *testing.T) {
@@ -127,7 +127,7 @@ func TestRunExecuteErrorIsTransport(t *testing.T) {
 	}
 }
 
-// mirrors TestPoolCheckoutSpreadsAcrossClients (psrp_test.go): with a 2-conn
+// mirrors TestPoolCheckoutSpreadsAcrossClients (winrm_test.go): with a 2-conn
 // pool and 2 concurrent Runs, both conns are used (no single conn serves
 // both). The two Runs are gated inside Execute so this only passes if both
 // conns are genuinely checked out at the same time, not merely serialized.
@@ -160,7 +160,7 @@ func TestPoolCheckoutSpreadsAcrossClients(t *testing.T) {
 	}
 }
 
-// mirrors TestRunTransientFailureDoesNotInvalidateConn (psrp_test.go): a
+// mirrors TestRunTransientFailureDoesNotInvalidateConn (winrm_test.go): a
 // KindTransient classification means the shell is fine and nothing was even
 // attempted. Run must not rebuild the conn (built==0) or retry (executes==1).
 func TestRunTransientDoesNotInvalidate(t *testing.T) {
@@ -191,7 +191,7 @@ func TestRunTransientDoesNotInvalidate(t *testing.T) {
 	}
 }
 
-// mirrors TestRunContextErrorDoesNotInvalidateOrRetry (psrp_test.go): a
+// mirrors TestRunContextErrorDoesNotInvalidateOrRetry (winrm_test.go): a
 // context deadline or cancellation from Execute maps KindTransport (not
 // retryable by core.exec) but must not invalidate the conn (built==0) — the
 // caller gave up, the shell is probably still fine.
@@ -224,7 +224,7 @@ func TestRunContextErrorDoesNotInvalidateOrRetry(t *testing.T) {
 	}
 }
 
-// mirrors TestRunAmbiguousTransportFailureDoesNotRetry (psrp_test.go): a
+// mirrors TestRunAmbiguousTransportFailureDoesNotRetry (winrm_test.go): a
 // KindTransport failure that is not a confirmed dead-shell signature must not
 // be retried within this Run (executes==1) — the script may already have
 // reached AD. The conn is still rebuilt (built==1) so a LATER, unrelated Run
@@ -259,7 +259,7 @@ func TestRunAmbiguousDoesNotRetry(t *testing.T) {
 	}
 }
 
-// mirrors TestRunRecoversFromDeadShellWithOneTransparentRetry (psrp_test.go):
+// mirrors TestRunRecoversFromDeadShellWithOneTransparentRetry (winrm_test.go):
 // a confirmed dead-shell (pipeline-start) failure invalidates the conn
 // (built==1) and transparently retries exactly once against the freshly
 // rebuilt executor.
@@ -303,7 +303,7 @@ func TestRunDeadShellRetriesExactlyOnce(t *testing.T) {
 	}
 }
 
-// mirrors TestRunGivesUpAfterExactlyOneRetry (psrp_test.go): if the rebuilt
+// mirrors TestRunGivesUpAfterExactlyOneRetry (winrm_test.go): if the rebuilt
 // executor is also dead, Run must surface the error rather than loop — the
 // retry budget is exactly one (built==1), never a retry-until-success loop.
 func TestRunGivesUpAfterExactlyOneRetry(t *testing.T) {

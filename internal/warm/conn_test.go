@@ -11,7 +11,7 @@ import (
 // needs alongside the Classifier's Kind: whether a failed Execute was driven
 // by a caller context error. A context error (bare or wrapped to any depth)
 // answers true; anything else answers false. It moved here with isCallerTimeout
-// when the retry/reap machinery was hoisted out of transport/psrp into warm —
+// when the retry/reap machinery was hoisted out of transport/winrm into warm —
 // warm now owns the function, so it owns its coverage.
 func TestIsCallerTimeout(t *testing.T) {
 	cases := []struct {

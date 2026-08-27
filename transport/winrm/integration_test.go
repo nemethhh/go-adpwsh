@@ -5,8 +5,8 @@
 //
 //	KRB5_CONFIG=... KRB5CCNAME=... PSRP_HOST=192.168.50.216 \
 //	  PSRP_SPN=HTTP/s-server.corp.local \
-//	  go test -tags psrplive ./transport/psrp/ -run TestLive -v
-package psrp
+//	  go test -tags psrplive ./transport/winrm/ -run TestLive -v
+package winrm
 
 import (
 	"context"

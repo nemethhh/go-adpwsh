@@ -14,7 +14,7 @@ import (
 // New builds an ssh+warm transport: a warm pool of persistent pwsh -sshs
 // runspaces on a jump box, each reached over its own SSH subsystem channel. It
 // validates the config but does not dial — each pooled conn opens its channel
-// lazily on first Run (matching transport/psrp and localwarm; unlike
+// lazily on first Run (matching transport/winrm and localwarm; unlike
 // transport/ssh, which dials eagerly). The runspace executor is shared with
 // local+warm via internal/psrun; only the channel Opener differs.
 func New(cfg Config) (adpwsh.Transport, error) {

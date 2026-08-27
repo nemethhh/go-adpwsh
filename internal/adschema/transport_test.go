@@ -29,9 +29,9 @@ func TestOpenDefersToTheLibrarysValidation(t *testing.T) {
 }
 
 func TestOpenPSRPRequiresHost(t *testing.T) {
-	// psrp is now a known kind; opening it with no host is a config error,
+	// winrm is now a known kind; opening it with no host is a config error,
 	// not an "unknown transport" error.
-	_, err := (TransportSpec{Kind: "psrp"}).Open()
+	_, err := (TransportSpec{Kind: "winrm"}).Open()
 	if err == nil || !strings.Contains(err.Error(), "host") {
 		t.Fatalf("want a host-required error, got %v", err)
 	}
