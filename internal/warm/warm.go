@@ -57,6 +57,8 @@ type Pool struct {
 	reapDone  chan struct{}
 }
 
+var _ adpwsh.Transport = (*Pool)(nil)
+
 // New validates params and builds the pool. It does not dial; each executor
 // connects lazily on first checkout, so the operation ctx governs the dial
 // and a transient failure does not permanently poison that conn.

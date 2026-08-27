@@ -42,7 +42,7 @@ type Config struct {
 	IdleTimeout time.Duration
 	// ReapAfter is how long a pooled conn may sit idle in the pool — checked
 	// in but unused by any Run — before the background reaper (see
-	// Transport.reapLoop in psrp.go) closes its shell and rebuilds the
+	// reapLoop in internal/warm) closes its shell and rebuilds the
 	// client, so the next Run through that conn reconnects fresh. This is
 	// what actually releases a shell server-side; IdleTimeout only bounds how
 	// long a shell nobody reaps stays alive, in case the reaper is somehow
@@ -76,9 +76,10 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.IdleTimeout <= 0 {
 		// Short enough that an abandoned shell is not worth caring about; the
-		// pool reconnects transparently (see conn.invalidate in psrp.go), so
-		// there is no cost to going lower. Long enough to comfortably exceed
-		// the gap between consecutive operations within one Terraform run.
+		// pool reconnects transparently (see the pool's invalidate/rebuild in
+		// internal/warm), so there is no cost to going lower. Long enough to
+		// comfortably exceed the gap between consecutive operations within
+		// one Terraform run.
 		c.IdleTimeout = 2 * time.Minute
 	} else if c.IdleTimeout < time.Second {
 		// Floor a too-small positive value rather than letting it survive to

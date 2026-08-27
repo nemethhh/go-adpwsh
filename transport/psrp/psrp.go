@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
-	warm "github.com/nemethhh/go-adpwsh/internal/warm"
+	"github.com/nemethhh/go-adpwsh/internal/warm"
 	psrp "github.com/smnsjas/go-psrp/client"
 )
 
