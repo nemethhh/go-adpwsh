@@ -18,7 +18,7 @@ const preload = `try { [System.Reflection.Assembly]::LoadFrom("$PSHOME\System.Se
 // shared by every transport that runs full-language PowerShell: the winrm full
 // mode and the local/ssh warm executors. The constrained-language variant
 // (a single-quoted $__adPayload literal) has no [Console]/.NET calls available
-// and stays in transport/psrp.
+// and stays in transport/winrm.
 func WrapFullPayload(script string, payload []byte) string {
 	b64 := base64.StdEncoding.EncodeToString(payload)
 	var b strings.Builder

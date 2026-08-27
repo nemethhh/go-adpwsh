@@ -37,7 +37,7 @@ const (
 	// a response is not transient: depending on the transport, the script
 	// may already have reached the server before the deadline fired, so the
 	// failure and a completed execution are indistinguishable from here.
-	// This is the exact bug that once made transport/psrp/wrap.go's
+	// This is the exact bug that once made transport/winrm/wrap.go's
 	// mapExecuteError treat context.Canceled/context.DeadlineExceeded as
 	// KindTransient — up to Retry.MaxAttempts re-issues of an operation that
 	// may have already run. See mapExecuteError's doc for the WSMan-specific

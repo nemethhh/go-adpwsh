@@ -1,4 +1,4 @@
-package psrp
+package winrm
 
 import (
 	"context"
@@ -92,7 +92,7 @@ var _ adpwsh.Transport = (*Transport)(nil)
 // client.
 func New(cfg Config) (*Transport, error) {
 	if err := cfg.Validate(); err != nil {
-		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "psrp.New", Err: err}
+		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "winrm.New", Err: err}
 	}
 	cfg = cfg.WithDefaults()
 	build := func() (warm.Executor, error) {

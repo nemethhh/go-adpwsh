@@ -1,4 +1,4 @@
-package psrp
+package winrm
 
 import (
 	"context"

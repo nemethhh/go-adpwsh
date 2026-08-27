@@ -7,20 +7,20 @@ import (
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
 	adlocal "github.com/nemethhh/go-adpwsh/transport/local"
-	adpsrp "github.com/nemethhh/go-adpwsh/transport/psrp"
 	adssh "github.com/nemethhh/go-adpwsh/transport/ssh"
+	adwinrm "github.com/nemethhh/go-adpwsh/transport/winrm"
 )
 
 // TransportSpec is everything needed to open a transport. The CLI fills it from
 // flags and the lab test fills it from the environment, so both open a
 // transport exactly one way.
 //
-// The exporter opens no transport of its own: local, ssh and psrp all already
+// The exporter opens no transport of its own: local, ssh and winrm all already
 // satisfy the library, so an export inherits their framing, timeouts and error
 // classification, and an operator exports from wherever they already run the
 // provider.
 type TransportSpec struct {
-	Kind     string // "local", "ssh", or "psrp"
+	Kind     string // "local", "ssh", or "winrm"
 	Timeout  time.Duration
 	PwshPath string
 
@@ -33,7 +33,7 @@ type TransportSpec struct {
 	SSHHostKey               string
 	SSHInsecureIgnoreHostKey bool
 
-	// psrp fields; see transport/psrp.Config for what each one means.
+	// winrm fields; see transport/winrm.Config for what each one means.
 	Host               string
 	Port               int
 	UseTLS             bool
@@ -53,7 +53,7 @@ type TransportSpec struct {
 // Open builds the transport. Validation is the library's — a missing host key
 // source or two auth methods produce its message, not a second opinion.
 //
-// Concurrency is 1 for local and ssh; psrp uses the caller-provided concurrency.
+// Concurrency is 1 for local and ssh; winrm uses the caller-provided concurrency.
 func (s TransportSpec) Open() (adpwsh.Transport, error) {
 	switch s.Kind {
 	case "local":
@@ -76,8 +76,8 @@ func (s TransportSpec) Open() (adpwsh.Transport, error) {
 			Timeout:               s.Timeout,
 			PwshPath:              s.PwshPath,
 		})
-	case "psrp":
-		return adpsrp.New(adpsrp.Config{
+	case "winrm":
+		return adwinrm.New(adwinrm.Config{
 			Host:               s.Host,
 			Port:               s.Port,
 			UseTLS:             s.UseTLS,
@@ -95,8 +95,8 @@ func (s TransportSpec) Open() (adpwsh.Transport, error) {
 			Timeout:            s.Timeout,
 		})
 	case "":
-		return nil, errors.New("--transport is required; pass local, ssh, or psrp")
+		return nil, errors.New("--transport is required; pass local, ssh, or winrm")
 	default:
-		return nil, fmt.Errorf("unknown transport %q; pass local, ssh, or psrp", s.Kind)
+		return nil, fmt.Errorf("unknown transport %q; pass local, ssh, or winrm", s.Kind)
 	}
 }
