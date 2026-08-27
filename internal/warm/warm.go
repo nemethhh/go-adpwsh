@@ -98,12 +98,10 @@ func New(p Params) (*Pool, error) {
 		t.idle <- &conn{exec: c, build: p.Build}
 	}
 	// The pool's only background activity: it releases shells this package
-	// opened but that nothing else ever tears down. Task 3 replaces this
-	// placeholder with the real reapLoop; for now it only exists so Close's
-	// close(t.reapStop); <-t.reapDone does not block forever. Started only
-	// once every conn is already sitting in t.idle, so it can never race the
-	// population loop above.
-	go func() { <-t.reapStop; close(t.reapDone) }()
+	// opened but that nothing else ever tears down (see reap.go). Started
+	// only once every conn is already sitting in t.idle, so it can never
+	// race the population loop above.
+	go t.reapLoop()
 	return t, nil
 }
 
