@@ -59,3 +59,47 @@ func TestAdapter_NeverSendsClientDataAck(t *testing.T) {
 		}
 	}
 }
+
+func TestAdapter_RoundTrip(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	a := New(client, client, uuid.New(), 5*time.Second)
+	defer a.Close()
+
+	// Server -> client Data becomes readable via Adapter.Read (decoded bytes).
+	go func() {
+		// "AAAA" base64-decodes to 0x00 0x00 0x00.
+		_, _ = server.Write([]byte("<Data Stream='Default' PSGuid='00000000-0000-0000-0000-000000000000'>AAAA</Data>\n"))
+	}()
+	buf := make([]byte, 16)
+	n, err := a.Read(buf)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if n != 3 || buf[0] != 0 || buf[1] != 0 || buf[2] != 0 {
+		t.Fatalf("decoded server Data = %v (n=%d), want [0 0 0]", buf[:n], n)
+	}
+
+	// Client -> server: Adapter.Write emits a <Data> element the server can read.
+	got := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(server)
+		sc.Buffer(make([]byte, 64*1024), 1<<20)
+		if sc.Scan() {
+			got <- sc.Text()
+		}
+	}()
+	if _, err := a.Write([]byte{0x01, 0x02, 0x03}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	select {
+	case line := <-got:
+		if !strings.HasPrefix(line, "<Data ") || !strings.Contains(line, "</Data>") {
+			t.Fatalf("client did not emit a Data element: %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never received the client's Data")
+	}
+}
