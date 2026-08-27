@@ -1,7 +1,9 @@
 package oop
 
 import (
+	"net"
 	"testing"
+	"time"
 )
 
 func TestSplitOutOfProcPackets(t *testing.T) {
@@ -52,5 +54,29 @@ func TestSplitOutOfProcPackets(t *testing.T) {
 				t.Errorf("remaining = %q, want %q", rem, c.wantRemaining)
 			}
 		})
+	}
+}
+
+func TestFramer_ReassemblesAcrossChunks(t *testing.T) {
+	// A single logical packet delivered in two raw reads must surface once, whole.
+	pr, pw := net.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	f := NewFramer(pr, pw)
+
+	go func() {
+		_, _ = pw.Write([]byte("<Data Stream='Default' PSGuid='x'>AAA"))
+		time.Sleep(50 * time.Millisecond)
+		_, _ = pw.Write([]byte("A</Data>"))
+	}()
+
+	buf := make([]byte, 4096)
+	n, err := f.Read(buf)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	got := string(buf[:n])
+	if got != "<Data Stream='Default' PSGuid='x'>AAAA</Data>\n" {
+		t.Fatalf("reassembled = %q", got)
 	}
 }
