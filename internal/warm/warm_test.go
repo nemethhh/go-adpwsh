@@ -67,6 +67,36 @@ func mustEncode(t *testing.T, script string) string {
 	return adscript.EncodeCommand(script)
 }
 
+// TestInvalidateDisposesOldExecutor asserts invalidate best-effort-closes the
+// executor it discards. A process-backed executor (local/ssh warm) owns a live
+// pwsh child; dropping it without Close would orphan the process. Closing the
+// discarded object is safe for winrm too (we never reuse that object).
+func TestInvalidateDisposesOldExecutor(t *testing.T) {
+	dead := errors.New("shell gone")
+	old := &fakeExec{execErr: dead}
+	fresh := &fakeExec{result: adpwsh.Result{Stdout: "ok"}}
+	seq := []*fakeExec{old, fresh}
+	i := 0
+	p, err := New(Params{
+		Concurrency: 1, Timeout: time.Second, ReapAfter: time.Hour,
+		Build:      func() (Executor, error) { e := seq[i]; i++; return e, nil },
+		Wrapper:    identityWrapper,
+		Classifier: fakeClassifier{kind: map[error]adpwsh.Kind{dead: adpwsh.KindTransport}, deadShell: map[error]bool{dead: true}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	if _, err := p.Run(context.Background(), mustEncode(t, "x"), nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	old.mu.Lock()
+	defer old.mu.Unlock()
+	if old.closes != 1 {
+		t.Fatalf("invalidate must Close the discarded executor exactly once; closes=%d", old.closes)
+	}
+}
+
 // mirrors TestRunReassemblesOutput / TestRunHadErrorsExitCode (psrp_test.go):
 // the pool returns the executor's adpwsh.Result verbatim.
 func TestRunReturnsExecutorResult(t *testing.T) {

@@ -54,16 +54,25 @@ func (c *conn) ensureConnected(ctx context.Context) error {
 // and cleared only by Disconnect or Close — nothing in a failed Execute call
 // resets it, so the same executor would go on reporting itself connected
 // forever even though its shell is gone, and a later Connect on it is a
-// silent no-op. Close is not a fix either: it can permanently mark the
-// executor closed, which then makes any future Connect on that same object
-// fail outright. Recovery therefore has to build a brand-new executor, not
-// Close-then-Connect the old one. The dead executor's shell is already gone
-// server-side, so there is nothing left to gracefully close; the old
-// executor is simply dropped (Build does no network I/O, so building its
-// replacement here is cheap).
+// silent no-op. Recovery therefore has to build a brand-new executor, not
+// Close-then-Connect the old one.
+//
+// The discarded executor is best-effort Closed first. For the winrm executor
+// this is a near no-op (its shell is already gone server-side), but a
+// process-backed executor (local/ssh warm) owns a live pwsh child, and simply
+// dropping it would orphan that process. Closing the OLD, discarded object is
+// always safe — we never reuse it, so the "Close permanently marks this object
+// closed, breaking a later Connect on it" hazard does not apply; that hazard is
+// exactly why we build a fresh executor rather than reviving this one. The
+// Close is bounded by a short timeout so a hung child cannot stall recovery.
 func (c *conn) invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.exec != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = c.exec.Close(ctx) // discarded object; releases an OS process, harmless for winrm
+		cancel()
+	}
 	if fresh, err := c.build(); err == nil {
 		c.exec = fresh
 	}
