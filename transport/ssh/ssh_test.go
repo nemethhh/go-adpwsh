@@ -95,6 +95,17 @@ func TestConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestDialRejectsBadConfig(t *testing.T) {
+	_, err := adssh.Dial(adssh.Config{}) // no Host
+	if err == nil {
+		t.Fatal("Dial must reject an invalid config")
+	}
+	var ae *adpwsh.Error
+	if !errors.As(err, &ae) {
+		t.Fatalf("want *adpwsh.Error, got %T", err)
+	}
+}
+
 func dialConfig(s *testServer, user, password string) adssh.Config {
 	host, port := splitHostPort(s.Addr)
 	return adssh.Config{
