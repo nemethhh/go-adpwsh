@@ -1,4 +1,4 @@
-package psrp
+package warm
 
 import (
 	"context"
@@ -6,14 +6,15 @@ import (
 )
 
 // This file is the release side of the shell-leak fix. Nothing else in this
-// package ever deletes a shell it opened: Config.IdleTimeout only bounds how
-// long an abandoned shell survives before the *server* reaps it, and
-// conn.invalidate (psrp.go) explicitly never closes the executor it
+// package ever deletes a shell it opened: the caller's own idle-timeout
+// configuration (set on the underlying transport, outside this package) only
+// bounds how long an abandoned shell survives before the *server* reaps it,
+// and conn.invalidate (conn.go) explicitly never closes the executor it
 // replaces, because it only ever runs on a shell already dead server-side.
 // This reaper is the one piece of the pool that closes a shell that is still
-// alive — the WS-Man Delete that actually releases it — for the common case
-// where nothing tells this package the run is over: it just notices a conn
-// has gone unused and lets it go.
+// alive — the call that actually releases it server-side — for the common
+// case where nothing tells this package the run is over: it just notices a
+// conn has gone unused and lets it go.
 
 // reapInterval picks how often the background reaper wakes to sweep the
 // pool. It scales with ReapAfter (so a shell goes idle-then-reaped within
@@ -29,15 +30,15 @@ func reapInterval(reapAfter time.Duration) time.Duration {
 	return iv
 }
 
-// reapLoop is the Transport's one background goroutine, started by New and
+// reapLoop is the Pool's one background goroutine, started by New and
 // stopped by Close. It wakes on a ticker and, each time, calls reapIdle to
 // sweep whatever conns are currently resting in the pool. Close signals
 // reapStop and waits for reapDone to close before doing anything else — see
 // Close's own comment for why that ordering, not the sweep loop, is what
 // makes Close-racing-a-sweep safe.
-func (t *Transport) reapLoop() {
+func (t *Pool) reapLoop() {
 	defer close(t.reapDone)
-	ticker := time.NewTicker(reapInterval(t.cfg.ReapAfter))
+	ticker := time.NewTicker(reapInterval(t.params.ReapAfter))
 	defer ticker.Stop()
 	for {
 		select {
@@ -73,7 +74,7 @@ func (t *Transport) reapLoop() {
 // concurrent Run keeps returning (and this same sweep keeps re-taking) one
 // conn while others are checked out elsewhere — n bounds the sweep to one
 // pass over what was actually idle, not an unbounded chase.
-func (t *Transport) reapIdle(now time.Time) {
+func (t *Pool) reapIdle(now time.Time) {
 	for i, n := 0, len(t.idle); i < n; i++ {
 		select {
 		case c := <-t.idle:
@@ -93,20 +94,20 @@ func (t *Transport) reapIdle(now time.Time) {
 // handles a shell already dead server-side and deliberately never closes the
 // old executor — closing a client whose shell is already gone would brick
 // it, per invalidate's own doc. reapConnIfIdle handles the opposite case: the
-// shell is alive, so it must call Close, which is what actually sends the
-// WS-Man Delete and releases it — the entire point of this mechanism.
+// shell is alive, so it must call Close, which is what actually releases it
+// server-side — the entire point of this mechanism.
 //
 // The caller (reapIdle) guarantees exclusive ownership of c for the duration
 // of this call (c is out of the idle channel), so nothing else can be
 // touching c concurrently — Run cannot, because it does not have this *conn;
-// Transport.Close cannot, for the same reason (see Close's own comment). The
-// lock is still taken, both for consistency with every other conn method
+// Pool.Close cannot, for the same reason (see Close's own comment). The lock
+// is still taken, both for consistency with every other conn method
 // (ensureConnected holds it across its own blocking Connect call the same
 // way) and because c's fields must become visible to whichever goroutine
 // checks this conn out next, on a different M — a plain unsynchronized write
 // here would be a data race even though no other goroutine holds this
 // specific *conn at the same time.
-func (t *Transport) reapConnIfIdle(c *conn, now time.Time) {
+func (t *Pool) reapConnIfIdle(c *conn, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.up {
@@ -114,14 +115,14 @@ func (t *Transport) reapConnIfIdle(c *conn, now time.Time) {
 		// an earlier pass): there is no live shell behind it to release.
 		return
 	}
-	if now.Sub(c.lastUsed) < t.cfg.ReapAfter {
+	if now.Sub(c.lastUsed) < t.params.ReapAfter {
 		// Used recently enough; leave the warm shell alone. Reaping a conn
 		// still in active rotation would be a functional regression, not a
 		// fix — the entire reason clients are kept warm in the first place.
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), t.cfg.Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), t.params.Timeout)
 	// Best-effort: a failed Close still means this executor's shell state is
 	// no longer trustworthy, so the conn is rebuilt exactly as if Close had
 	// succeeded. Refusing to swap in a fresh executor on a Close error would
