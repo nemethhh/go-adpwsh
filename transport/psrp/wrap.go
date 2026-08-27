@@ -1,43 +1,31 @@
 package psrp
 
 import (
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
+	"github.com/nemethhh/go-adpwsh/internal/adscript"
 	psrp "github.com/smnsjas/go-psrp/client"
 	"github.com/smnsjas/go-psrp/wsman"
 )
 
-// preload works around an empty [AppContext]::BaseDirectory in a PS7 remote
-// runspace, which otherwise breaks the AD module's lazily-loaded WCF dependency.
-// $PSHOME is correct in the runspace, so LoadFrom by full path succeeds; it is
-// best-effort so it is a harmless no-op where the runtime already resolves it.
-const preload = `try { [System.Reflection.Assembly]::LoadFrom("$PSHOME\System.ServiceModel.NetFramingBase.dll") | Out-Null } catch {}`
-
 // buildWrapper prepends payload delivery to the composed script. In full mode
-// it uses [Console]::SetIn (so the script's [Console]::In.ReadToEnd() returns
-// the JSON) plus the WCF preload. In constrained mode neither is available
-// (both are .NET calls a ConstrainedLanguage endpoint rejects), so the payload
-// is delivered as an injection-safe single-quoted literal the preamble reads
-// from $__adPayload; single quotes are doubled, which is complete escaping for
-// a single-quoted PowerShell string, and json.Marshal emits single-line JSON.
+// it delegates to adscript.WrapFullPayload ([Console]::SetIn so the script's
+// [Console]::In.ReadToEnd() returns the JSON, plus the WCF preload) — the same
+// path the local/ssh warm executors use. In constrained mode neither is
+// available (both are .NET calls a ConstrainedLanguage endpoint rejects), so
+// the payload is delivered as an injection-safe single-quoted literal the
+// preamble reads from $__adPayload; single quotes are doubled, which is
+// complete escaping for a single-quoted PowerShell string, and json.Marshal
+// emits single-line JSON.
 func buildWrapper(script string, payload []byte, constrained bool) string {
 	if constrained {
 		lit := strings.ReplaceAll(string(payload), "'", "''")
 		return "$__adPayload = '" + lit + "'\n" + script
 	}
-	b64 := base64.StdEncoding.EncodeToString(payload)
-	var b strings.Builder
-	b.WriteString(`[Console]::SetIn([System.IO.StringReader]::new([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('`)
-	b.WriteString(b64)
-	b.WriteString("'))))\n")
-	b.WriteString(preload)
-	b.WriteString("\n")
-	b.WriteString(script)
-	return b.String()
+	return adscript.WrapFullPayload(script, payload)
 }
 
 // joinObjects renders go-psrp's deserialized output stream back to the raw text
