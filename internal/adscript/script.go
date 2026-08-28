@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-//go:embed preamble.ps1 epilogue.ps1 ops/*.ps1 tools/*.ps1
+//go:embed preamble.ps1 epilogue.ps1 ops/*.ps1 tools/*.ps1 endpoint/*.ps1
 var files embed.FS
 
 var (
