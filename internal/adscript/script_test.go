@@ -222,3 +222,55 @@ func TestToolScriptSharesTheEnvelope(t *testing.T) {
 		}
 	}
 }
+
+// TestCLMACLScriptsCompileAndCallHelpers pins the CLM ACL op variants added
+// alongside the ConstrainedLanguage endpoint helpers: each op fragment must
+// delegate to the matching helper function by name, and the fragment itself
+// (not the shared preamble/epilogue, which legitimately use .NET) must stay
+// inside what a ConstrainedLanguage caller is allowed to run.
+func TestCLMACLScriptsCompileAndCallHelpers(t *testing.T) {
+	cases := map[string]string{
+		OpACLGrantCLM:  "Set-AdAce",
+		OpACLReadCLM:   "Get-AdAce",
+		OpACLRevokeCLM: "Remove-AdAce",
+	}
+	for op, fn := range cases {
+		s, err := Script(op)
+		if err != nil {
+			t.Fatalf("Script(%q): %v", op, err)
+		}
+		if !strings.Contains(s, fn) {
+			t.Errorf("%s must call %s", op, fn)
+		}
+		// Caller-scope CLM safety: the *fragment* must not construct .NET,
+		// call methods on non-core types, or use any other construct a
+		// ConstrainedLanguage caller cannot run -- static-type member access
+		// ("::", covering "::new("), .GetType(), and .Clear() (e.g.
+		// $Error.Clear()), alongside the original .NET-construction guards.
+		// The preamble/epilogue legitimately use these; assert on the
+		// fragment between them, never on the composed script as a whole.
+		clmIllegal := []string{"::", "AddAccessRule(", ".GetType(", ".Clear("}
+		frag := fragmentOnly(t, s)
+		for _, forbidden := range clmIllegal {
+			if strings.Contains(frag, forbidden) {
+				t.Errorf("%s fragment contains CLM-illegal construct %q", op, forbidden)
+			}
+		}
+	}
+}
+
+// fragmentOnly returns the op fragment with the shared preamble and epilogue
+// stripped, so a CLM-safety assertion sees only the op's own text.
+func fragmentOnly(t *testing.T, composed string) string {
+	t.Helper()
+	pre, err := files.ReadFile("preamble.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	epi, err := files.ReadFile("epilogue.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.TrimPrefix(composed, string(pre))
+	return strings.TrimSuffix(s, string(epi))
+}

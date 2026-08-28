@@ -43,6 +43,12 @@ func TestScriptsAvoidPowerShell7Constructs(t *testing.T) {
 		}
 		check("tool "+tool, s)
 	}
+	// The ACL endpoint helpers install as -FunctionDefinitions on a
+	// ConstrainedLanguage endpoint and run FullLanguage there, but the host
+	// itself is still Windows PowerShell 5.1: a 6+/7+-only construct in this
+	// file would fail to parse on the endpoint at registration time, before
+	// ConstrainedLanguage mode is even relevant.
+	check("endpoint/acl_helpers.ps1", ACLEndpointHelpers())
 }
 
 // The converter's scalar short-circuit is load-bearing and easy to delete by
