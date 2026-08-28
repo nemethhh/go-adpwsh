@@ -242,15 +242,18 @@ func TestCLMACLScriptsCompileAndCallHelpers(t *testing.T) {
 		if !strings.Contains(s, fn) {
 			t.Errorf("%s must call %s", op, fn)
 		}
-		// Caller-scope CLM safety: the *fragment* must not construct .NET or
-		// call methods on non-core types. The preamble/epilogue are allowed
-		// their existing forms; assert on the fragment between them.
-		if strings.Contains(s, "::new(") || strings.Contains(s, "AddAccessRule(") {
-			// crude guard: those belong only in the endpoint helper, never in
-			// the CLM op fragment.
-			frag := fragmentOnly(t, s)
-			if strings.Contains(frag, "::new(") || strings.Contains(frag, "AddAccessRule(") {
-				t.Errorf("%s fragment contains CLM-illegal .NET", op)
+		// Caller-scope CLM safety: the *fragment* must not construct .NET,
+		// call methods on non-core types, or use any other construct a
+		// ConstrainedLanguage caller cannot run -- static-type member access
+		// ("::", covering "::new("), .GetType(), and .Clear() (e.g.
+		// $Error.Clear()), alongside the original .NET-construction guards.
+		// The preamble/epilogue legitimately use these; assert on the
+		// fragment between them, never on the composed script as a whole.
+		clmIllegal := []string{"::", "AddAccessRule(", ".GetType(", ".Clear("}
+		frag := fragmentOnly(t, s)
+		for _, forbidden := range clmIllegal {
+			if strings.Contains(frag, forbidden) {
+				t.Errorf("%s fragment contains CLM-illegal construct %q", op, forbidden)
 			}
 		}
 	}
