@@ -222,3 +222,52 @@ func TestToolScriptSharesTheEnvelope(t *testing.T) {
 		}
 	}
 }
+
+// TestCLMACLScriptsCompileAndCallHelpers pins the CLM ACL op variants added
+// alongside the ConstrainedLanguage endpoint helpers: each op fragment must
+// delegate to the matching helper function by name, and the fragment itself
+// (not the shared preamble/epilogue, which legitimately use .NET) must stay
+// inside what a ConstrainedLanguage caller is allowed to run.
+func TestCLMACLScriptsCompileAndCallHelpers(t *testing.T) {
+	cases := map[string]string{
+		OpACLGrantCLM:  "Set-AdAce",
+		OpACLReadCLM:   "Get-AdAce",
+		OpACLRevokeCLM: "Remove-AdAce",
+	}
+	for op, fn := range cases {
+		s, err := Script(op)
+		if err != nil {
+			t.Fatalf("Script(%q): %v", op, err)
+		}
+		if !strings.Contains(s, fn) {
+			t.Errorf("%s must call %s", op, fn)
+		}
+		// Caller-scope CLM safety: the *fragment* must not construct .NET or
+		// call methods on non-core types. The preamble/epilogue are allowed
+		// their existing forms; assert on the fragment between them.
+		if strings.Contains(s, "::new(") || strings.Contains(s, "AddAccessRule(") {
+			// crude guard: those belong only in the endpoint helper, never in
+			// the CLM op fragment.
+			frag := fragmentOnly(t, s)
+			if strings.Contains(frag, "::new(") || strings.Contains(frag, "AddAccessRule(") {
+				t.Errorf("%s fragment contains CLM-illegal .NET", op)
+			}
+		}
+	}
+}
+
+// fragmentOnly returns the op fragment with the shared preamble and epilogue
+// stripped, so a CLM-safety assertion sees only the op's own text.
+func fragmentOnly(t *testing.T, composed string) string {
+	t.Helper()
+	pre, err := files.ReadFile("preamble.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	epi, err := files.ReadFile("epilogue.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.TrimPrefix(composed, string(pre))
+	return strings.TrimSuffix(s, string(epi))
+}

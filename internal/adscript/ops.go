@@ -48,6 +48,9 @@ const (
 	OpACLRead       = "acl_read"
 	OpACLGrant      = "acl_grant"
 	OpACLRevoke     = "acl_revoke"
+	OpACLReadCLM    = "acl_read_clm"
+	OpACLGrantCLM   = "acl_grant_clm"
+	OpACLRevokeCLM  = "acl_revoke_clm"
 	OpSchemaResolve = "schema_resolve"
 )
 
@@ -60,7 +63,8 @@ var ops = []string{
 	OpOUSearch, OpGroupSearch, OpUserSearch,
 	OpGMSACreate, OpGMSARead, OpGMSAUpdate, OpGMSADelete, OpGMSASearch,
 	OpComputerCreate, OpComputerRead, OpComputerUpdate, OpComputerDelete, OpComputerSearch,
-	OpACLRead, OpACLGrant, OpACLRevoke, OpSchemaResolve,
+	OpACLRead, OpACLGrant, OpACLRevoke,
+	OpACLReadCLM, OpACLGrantCLM, OpACLRevokeCLM, OpSchemaResolve,
 }
 
 // Ops returns every op name, in a stable order.
