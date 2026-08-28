@@ -31,12 +31,6 @@ func (c *core) exec(ctx context.Context, op string, payload map[string]any, out 
 		payload = map[string]any{}
 	}
 	payload["op"] = op
-	if isACLOp(op) {
-		if cr, ok := c.tr.(interface{ Constrained() bool }); ok && cr.Constrained() {
-			return &Error{Kind: KindUnsupported, Op: op, Err: errors.New(
-				`ACL delegation requires a full-language endpoint; set the winrm transport's language_mode to "full" (or manage the delegation out-of-band)`)}
-		}
-	}
 	if c.server != "" {
 		payload["server"] = c.server
 	}
@@ -54,7 +48,13 @@ func (c *core) exec(ctx context.Context, op string, payload map[string]any, out 
 		return &Error{Kind: KindUnknown, Op: op, Err: fmt.Errorf("cannot encode payload: %w", err)}
 	}
 
-	script, err := adscript.Script(op)
+	scriptOp := op
+	if isACLOp(op) {
+		if cr, ok := c.tr.(interface{ Constrained() bool }); ok && cr.Constrained() {
+			scriptOp = aclCLMVariant(op)
+		}
+	}
+	script, err := adscript.Script(scriptOp)
 	if err != nil {
 		return &Error{Kind: KindUnknown, Op: op, Err: err}
 	}
@@ -97,6 +97,21 @@ func (c *core) exec(ctx context.Context, op string, payload map[string]any, out 
 // classes that a ConstrainedLanguage endpoint cannot construct.
 func isACLOp(op string) bool {
 	return op == adscript.OpACLRead || op == adscript.OpACLGrant || op == adscript.OpACLRevoke
+}
+
+// aclCLMVariant maps an ACL op to its ConstrainedLanguage variant, whose script
+// calls the endpoint's FunctionDefinitions helper instead of constructing the
+// .NET ACL types inline (which a ConstrainedLanguage caller cannot).
+func aclCLMVariant(op string) string {
+	switch op {
+	case adscript.OpACLRead:
+		return adscript.OpACLReadCLM
+	case adscript.OpACLGrant:
+		return adscript.OpACLGrantCLM
+	case adscript.OpACLRevoke:
+		return adscript.OpACLRevokeCLM
+	}
+	return op
 }
 
 // backoff sleeps for the attempt's exponential delay, jittered, and honours
