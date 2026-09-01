@@ -140,7 +140,9 @@ func (e *failoverExecutor) Connect(ctx context.Context) error {
 		err = ex.Connect(cctx)
 		cancel()
 		if err != nil {
-			_ = ex.Close(context.Background())
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = ex.Close(closeCtx)
+			closeCancel()
 			e.cache.markDown(ep.Host)
 			errs = append(errs, ep.Host+": "+err.Error())
 			lastErr = err
@@ -178,8 +180,13 @@ func (e *failoverExecutor) Close(ctx context.Context) error {
 // The caller's ctx still caps the total (WithTimeout picks the earlier
 // deadline), so this only ever shortens a per-probe window, never extends one.
 func connectBudget(total time.Duration, n int) time.Duration {
-	if n < 1 {
-		n = 1
+	// A single candidate gets the whole operation deadline: with nothing to
+	// share the budget with there is no starvation to prevent, and the
+	// single-host path must keep its pre-failover connect deadline (the 15s
+	// ceiling exists only to stop a hung endpoint from starving a healthy
+	// sibling when there are 2+ candidates).
+	if n <= 1 {
+		return total
 	}
 	b := total / time.Duration(n)
 	if b > maxConnectBudget {

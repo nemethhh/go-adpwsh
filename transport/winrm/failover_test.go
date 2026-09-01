@@ -88,6 +88,10 @@ func TestFailoverSingleEndpointReturnsRawError(t *testing.T) {
 }
 
 func TestConnectBudgetClamp(t *testing.T) {
+	// single candidate: gets the whole budget with no ceiling (no starvation to prevent)
+	if got := connectBudget(90*time.Second, 1); got != 90*time.Second {
+		t.Errorf("budget(90s,1) = %v, want 90s (no ceiling for single candidate)", got)
+	}
 	// ceiling: Timeout/n above the cap is clamped down (this is the hung-endpoint fix)
 	if got := connectBudget(90*time.Second, 2); got != maxConnectBudget {
 		t.Errorf("budget(90s,2) = %v, want ceiling %v", got, maxConnectBudget)
