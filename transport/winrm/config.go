@@ -57,6 +57,46 @@ type Config struct {
 	// it — the WSMan session configuration launches the host — so it defaults to
 	// "pwsh" and only the cold transport (cold.go) reads it.
 	PwshPath string
+	// Endpoints, when non-empty, is the ordered failover list the warm
+	// transport probes at connect time, binding to the first that connects.
+	// Empty ⇒ the single Host/Port/SPN fields are used (pre-failover path).
+	Endpoints []Endpoint
+}
+
+// Endpoint is one WinRM host in a failover list. Only addressing varies per
+// host; all auth/TLS/Kerberos/mode/endpoint-config fields stay on Config and
+// are shared across every endpoint.
+type Endpoint struct {
+	Host string
+	Port int    // 0 => inherit Config.Port, then the use_tls default
+	SPN  string // "" => derived "HTTP/<Host>"
+}
+
+// resolvedEndpoints returns one fully-defaulted Config per endpoint. With no
+// Endpoints it returns a single element from c's own Host/Port/SPN. With
+// Endpoints set, each element inherits every shared field from c but carries
+// that endpoint's Host, its Port (own, else c.Port, else the use_tls default),
+// and its SPN (own, else derived HTTP/<host>); c.Host/c.SPN are ignored so one
+// shared SPN can never be misapplied across hosts.
+func (c Config) resolvedEndpoints() []Config {
+	if len(c.Endpoints) == 0 {
+		return []Config{c.WithDefaults()}
+	}
+	base := c
+	base.Endpoints = nil
+	base.Host, base.SPN = "", ""
+	out := make([]Config, 0, len(c.Endpoints))
+	for _, ep := range c.Endpoints {
+		cc := base
+		cc.Host = ep.Host
+		cc.Port = ep.Port
+		if cc.Port == 0 {
+			cc.Port = c.Port
+		}
+		cc.SPN = ep.SPN
+		out = append(out, cc.WithDefaults())
+	}
+	return out
 }
 
 func (c Config) WithDefaults() Config {
@@ -114,8 +154,19 @@ func (c Config) Constrained() bool { return c.LanguageMode == "constrained" }
 // concurrency is rejected here rather than silently accepted (WithDefaults
 // later defaults an unset value).
 func (c Config) Validate() error {
-	if c.Host == "" {
-		return errors.New("winrm: host is required")
+	if len(c.Endpoints) == 0 {
+		if c.Host == "" {
+			return errors.New("winrm: host is required")
+		}
+	} else {
+		if c.Host != "" {
+			return errors.New("winrm: set host or endpoints, not both")
+		}
+		for i, ep := range c.Endpoints {
+			if ep.Host == "" {
+				return fmt.Errorf("winrm: endpoint %d has an empty host", i)
+			}
+		}
 	}
 	if c.InsecureSkipVerify && !c.UseTLS {
 		return errors.New("winrm: insecure_skip_verify has no effect without use_tls")

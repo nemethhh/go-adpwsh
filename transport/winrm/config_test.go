@@ -120,3 +120,49 @@ func TestConfigLanguageMode(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvedEndpointsSingleHost(t *testing.T) {
+	got := Config{Host: "dc.corp.local", Username: "u"}.resolvedEndpoints()
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].Host != "dc.corp.local" || got[0].SPN != "HTTP/dc.corp.local" || got[0].Port != 5985 {
+		t.Errorf("single-host defaults wrong: %+v", got[0])
+	}
+}
+
+func TestResolvedEndpointsPerHostDefaults(t *testing.T) {
+	c := Config{
+		Username: "u",
+		Port:     5986, // shared fallback for endpoints without their own port
+		Endpoints: []Endpoint{
+			{Host: "dc1.corp.local"},                       // derive SPN + inherit shared port
+			{Host: "dc2.corp.local", Port: 5985, SPN: "HTTP/alias"}, // full override
+		},
+	}
+	got := c.resolvedEndpoints()
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].Host != "dc1.corp.local" || got[0].SPN != "HTTP/dc1.corp.local" || got[0].Port != 5986 {
+		t.Errorf("ep0 = %+v, want per-host SPN + shared port 5986", got[0])
+	}
+	if got[1].Port != 5985 || got[1].SPN != "HTTP/alias" {
+		t.Errorf("ep1 = %+v, want its own port/spn", got[1])
+	}
+	if got[0].Username != "u" || got[1].Username != "u" {
+		t.Errorf("shared Username not carried to endpoints")
+	}
+}
+
+func TestValidateEndpoints(t *testing.T) {
+	if err := (Config{Endpoints: []Endpoint{{Host: "h1"}, {Host: "h2"}}}).Validate(); err != nil {
+		t.Errorf("valid endpoints rejected: %v", err)
+	}
+	if err := (Config{Host: "h", Endpoints: []Endpoint{{Host: "h1"}}}).Validate(); err == nil {
+		t.Error("Host + Endpoints both set: want error")
+	}
+	if err := (Config{Endpoints: []Endpoint{{Host: ""}}}).Validate(); err == nil {
+		t.Error("empty endpoint host: want error")
+	}
+}
