@@ -95,8 +95,9 @@ func New(cfg Config) (*Transport, error) {
 		return nil, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "winrm.New", Err: err}
 	}
 	cfg = cfg.WithDefaults()
+	cache := newNegativeCache(negativeCacheCooldown)
 	build := func() (warm.Executor, error) {
-		return newFailoverExecutor(cfg.resolvedEndpoints()), nil
+		return newFailoverExecutor(cfg.resolvedEndpoints(), cache), nil
 	}
 	wrapper := func(script string, payload []byte) string {
 		return buildWrapper(script, payload, cfg.Constrained())
