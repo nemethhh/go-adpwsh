@@ -87,10 +87,19 @@ func TestFailoverSingleEndpointReturnsRawError(t *testing.T) {
 	}
 }
 
-func TestConnectBudgetFloor(t *testing.T) {
-	if got := connectBudget(60*time.Second, 3); got != 20*time.Second {
-		t.Errorf("budget(60s,3) = %v, want 20s", got)
+func TestConnectBudgetClamp(t *testing.T) {
+	// ceiling: Timeout/n above the cap is clamped down (this is the hung-endpoint fix)
+	if got := connectBudget(90*time.Second, 2); got != maxConnectBudget {
+		t.Errorf("budget(90s,2) = %v, want ceiling %v", got, maxConnectBudget)
 	}
+	if got := connectBudget(60*time.Second, 3); got != maxConnectBudget {
+		t.Errorf("budget(60s,3) = %v, want ceiling %v (20s clamped)", got, maxConnectBudget)
+	}
+	// mid-range: below the ceiling, above the floor, Timeout/n is used as-is
+	if got := connectBudget(20*time.Second, 2); got != 10*time.Second {
+		t.Errorf("budget(20s,2) = %v, want 10s", got)
+	}
+	// floor: tiny Timeout/n is raised to the minimum
 	if got := connectBudget(3*time.Second, 3); got != minConnectBudget {
 		t.Errorf("budget(3s,3) = %v, want floor %v", got, minConnectBudget)
 	}

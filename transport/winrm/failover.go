@@ -15,6 +15,13 @@ import (
 // chance to dial.
 const minConnectBudget = 5 * time.Second
 
+// maxConnectBudget caps each per-endpoint probe so a HUNG endpoint (host up but
+// its WinRM handshake stalling, rather than refusing) is abandoned quickly
+// instead of consuming Timeout/n of the operation deadline and starving the
+// next, healthy endpoint. Lab-proven: with Timeout/n = 45s a stalled primary
+// left the healthy secondary too little of a 60s op deadline to connect.
+const maxConnectBudget = 15 * time.Second
+
 // failoverExecutor is a warm.Executor that probes an ordered list of WinRM
 // endpoints at Connect time and binds to the first that connects; Execute and
 // Close delegate to the bound endpoint. A conn whose shell dies is rebuilt by
@@ -87,15 +94,19 @@ func (e *failoverExecutor) Close(ctx context.Context) error {
 	return e.active.Close(ctx)
 }
 
-// connectBudget is each endpoint's slice of one operation's timeout, floored so
-// a black-hole host cannot consume the whole budget before the others are
-// tried. The caller's ctx still caps the total (WithTimeout picks the earlier
+// connectBudget is each endpoint's slice of one operation's timeout, clamped to
+// [minConnectBudget, maxConnectBudget]. The ceiling prevents a hung endpoint
+// from starving the next one; the floor ensures each still gets a usable chance.
+// The caller's ctx still caps the total (WithTimeout picks the earlier
 // deadline), so this only ever shortens a per-probe window, never extends one.
 func connectBudget(total time.Duration, n int) time.Duration {
 	if n < 1 {
 		n = 1
 	}
 	b := total / time.Duration(n)
+	if b > maxConnectBudget {
+		b = maxConnectBudget
+	}
 	if b < minConnectBudget {
 		b = minConnectBudget
 	}
