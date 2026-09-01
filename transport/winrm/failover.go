@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
@@ -95,6 +96,13 @@ type failoverExecutor struct {
 	// constructed, not when it cannot dial — dialing is Connect's job.
 	newExec func(Config) (warm.Executor, error)
 	active  warm.Executor
+	// strategy and rr drive round-robin ordering. strategy's zero value
+	// (StrategyFailover) and a nil rr both mean strict list order, so a
+	// failoverExecutor built without them behaves exactly as before. rr is the
+	// pool-shared rotation counter (created once in New), so rotation advances
+	// across the warm pool's reap-and-rebuild — the same sharing as the cache.
+	strategy SelectionStrategy
+	rr       *uint64
 }
 
 func newFailoverExecutor(endpoints []Config, cache *negativeCache) *failoverExecutor {
@@ -111,19 +119,40 @@ func newFailoverExecutor(endpoints []Config, cache *negativeCache) *failoverExec
 	}
 }
 
+// orderedEndpoints returns the endpoints in the order this connect should probe
+// them. Failover — and any single-endpoint or nil-counter executor — returns the
+// list unchanged. Round-robin advances the pool-shared counter once per connect
+// and rotates the list so successive connects start at successive endpoints; the
+// existing negative-cache filter and probe loop then run over the rotated order,
+// so round-robin inherits failover-through-on-failure unchanged.
+func (e *failoverExecutor) orderedEndpoints() []Config {
+	n := len(e.endpoints)
+	if e.strategy != StrategyRoundRobin || n <= 1 || e.rr == nil {
+		return e.endpoints
+	}
+	// Reduce modulo n in uint64 space before the int cast: a wrapped counter must
+	// never produce a negative index on a 32-bit int (GOARCH=386).
+	start := int((atomic.AddUint64(e.rr, 1) - 1) % uint64(n))
+	out := make([]Config, 0, n)
+	out = append(out, e.endpoints[start:]...)
+	out = append(out, e.endpoints[:start]...)
+	return out
+}
+
 func (e *failoverExecutor) Connect(ctx context.Context) error {
 	// Prefer endpoints not currently in a negative-cache cooldown. If every
 	// endpoint is cooling down (total outage, or all just failed), fall back to
 	// trying them all — the cache must never make Connect give up without a real
 	// attempt.
-	candidates := make([]Config, 0, len(e.endpoints))
-	for _, ep := range e.endpoints {
+	ordered := e.orderedEndpoints()
+	candidates := make([]Config, 0, len(ordered))
+	for _, ep := range ordered {
 		if !e.cache.isDown(ep.Host) {
 			candidates = append(candidates, ep)
 		}
 	}
 	if len(candidates) == 0 {
-		candidates = e.endpoints
+		candidates = ordered
 	}
 
 	var errs []string

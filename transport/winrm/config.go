@@ -61,6 +61,10 @@ type Config struct {
 	// transport probes at connect time, binding to the first that connects.
 	// Empty ⇒ the single Host/Port/SPN fields are used (pre-failover path).
 	Endpoints []Endpoint
+	// Strategy selects endpoint ordering at connect time (see SelectionStrategy).
+	// Zero value ⇒ StrategyFailover, so leaving it unset preserves the
+	// strict-priority path byte-for-byte. Only meaningful with 2+ Endpoints.
+	Strategy SelectionStrategy
 }
 
 // Endpoint is one WinRM host in a failover list. Only addressing varies per
@@ -71,6 +75,21 @@ type Endpoint struct {
 	Port int    // 0 => inherit Config.Port, then the use_tls default
 	SPN  string // "" => derived "HTTP/<Host>"
 }
+
+// SelectionStrategy chooses how the warm failover executor orders endpoints at
+// connect time. The zero value is StrategyFailover, so a Config that never sets
+// Strategy keeps the strict-priority behaviour.
+type SelectionStrategy int
+
+const (
+	// StrategyFailover probes endpoints in list order on every (re)connect, so
+	// endpoint[0] is preferred whenever healthy (the pre-existing behaviour).
+	StrategyFailover SelectionStrategy = iota
+	// StrategyRoundRobin rotates the start index across connects so the pool's
+	// connections fan out across the endpoints (even wear), while still failing
+	// through to the next endpoint when the chosen one is down.
+	StrategyRoundRobin
+)
 
 // resolvedEndpoints returns one fully-defaulted Config per endpoint. With no
 // Endpoints it returns a single element from c's own Host/Port/SPN. With

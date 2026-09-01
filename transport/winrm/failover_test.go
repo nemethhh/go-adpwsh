@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -232,5 +234,120 @@ func TestNegativeCacheSharedAcrossExecutorsSkipsDownHost(t *testing.T) {
 	}
 	if strings.Join(built2, ",") != "b" {
 		t.Errorf("built2 = %v, want only b (a must not be re-probed by the second executor)", built2)
+	}
+}
+
+func TestRoundRobinRotatesStartAcrossConnects(t *testing.T) {
+	rr := new(uint64)
+	endpoints := []Config{{Host: "a"}, {Host: "b"}, {Host: "c"}}
+	var bound []string
+	for i := 0; i < 6; i++ {
+		fe := newFailoverExecutor(endpoints, nil)
+		fe.strategy = StrategyRoundRobin
+		fe.rr = rr
+		withStubs(fe, map[string]*stubExec{
+			"a": {host: "a"}, "b": {host: "b"}, "c": {host: "c"},
+		}, new([]string))
+		if err := fe.Connect(context.Background()); err != nil {
+			t.Fatalf("Connect %d: %v", i, err)
+		}
+		res, _ := fe.Execute(context.Background(), "x")
+		bound = append(bound, res.Stdout)
+	}
+	if strings.Join(bound, ",") != "a,b,c,a,b,c" {
+		t.Errorf("bound = %v, want a,b,c,a,b,c (rotation across connects)", bound)
+	}
+}
+
+func TestRoundRobinFailsOverWhenStartIsDown(t *testing.T) {
+	rr := new(uint64) // first Connect → start index 0 = "a"
+	fe := newFailoverExecutor([]Config{{Host: "a"}, {Host: "b"}}, nil)
+	fe.strategy = StrategyRoundRobin
+	fe.rr = rr
+	var built []string
+	withStubs(fe, map[string]*stubExec{
+		"a": {host: "a", connectErr: errors.New("refused")},
+		"b": {host: "b"},
+	}, &built)
+	if err := fe.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if strings.Join(built, ",") != "a,b" {
+		t.Errorf("built = %v, want a,b (round-robin still fails through to the next host)", built)
+	}
+	res, _ := fe.Execute(context.Background(), "x")
+	if res.Stdout != "b" {
+		t.Errorf("bound = %q, want b", res.Stdout)
+	}
+}
+
+func TestRoundRobinSingleEndpointIsNoop(t *testing.T) {
+	rr := new(uint64)
+	fe := newFailoverExecutor([]Config{{Host: "a"}}, nil)
+	fe.strategy = StrategyRoundRobin
+	fe.rr = rr
+	var built []string
+	withStubs(fe, map[string]*stubExec{"a": {host: "a"}}, &built)
+	if err := fe.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if strings.Join(built, ",") != "a" {
+		t.Errorf("built = %v, want a", built)
+	}
+	if got := atomic.LoadUint64(rr); got != 0 {
+		t.Errorf("counter advanced to %d for a single endpoint; want 0 (no rotation work)", got)
+	}
+}
+
+func TestRoundRobinConcurrentConnectsDistribute(t *testing.T) {
+	rr := new(uint64)
+	endpoints := []Config{{Host: "a"}, {Host: "b"}, {Host: "c"}}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	bound := map[string]int{}
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fe := newFailoverExecutor(endpoints, nil)
+			fe.strategy = StrategyRoundRobin
+			fe.rr = rr
+			stubs := map[string]*stubExec{"a": {host: "a"}, "b": {host: "b"}, "c": {host: "c"}}
+			fe.newExec = func(c Config) (warm.Executor, error) { return stubs[c.Host], nil }
+			if err := fe.Connect(context.Background()); err != nil {
+				t.Errorf("Connect: %v", err)
+				return
+			}
+			res, _ := fe.Execute(context.Background(), "x")
+			mu.Lock()
+			bound[res.Stdout]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if len(bound) != 3 {
+		t.Errorf("bound hosts = %v, want all 3 distinct (atomic counter gives each connect a unique slot)", bound)
+	}
+}
+
+func TestFailoverStrategyIgnoresCounterAndPinsFirst(t *testing.T) {
+	// Contrast with round-robin: the default strategy pins endpoint[0] on every
+	// (re)connect and must never touch the shared counter.
+	rr := new(uint64)
+	endpoints := []Config{{Host: "a"}, {Host: "b"}}
+	for i := 0; i < 3; i++ {
+		fe := newFailoverExecutor(endpoints, nil) // strategy defaults to StrategyFailover
+		fe.rr = rr
+		withStubs(fe, map[string]*stubExec{"a": {host: "a"}, "b": {host: "b"}}, new([]string))
+		if err := fe.Connect(context.Background()); err != nil {
+			t.Fatalf("Connect %d: %v", i, err)
+		}
+		res, _ := fe.Execute(context.Background(), "x")
+		if res.Stdout != "a" {
+			t.Errorf("connect %d bound %q, want a (failover always starts at 0)", i, res.Stdout)
+		}
+	}
+	if got := atomic.LoadUint64(rr); got != 0 {
+		t.Errorf("counter advanced to %d under failover; want 0 (failover must not touch it)", got)
 	}
 }

@@ -96,8 +96,12 @@ func New(cfg Config) (*Transport, error) {
 	}
 	cfg = cfg.WithDefaults()
 	cache := newNegativeCache(negativeCacheCooldown)
+	rr := new(uint64) // pool-shared rotation counter; ignored unless Strategy is round-robin
 	build := func() (warm.Executor, error) {
-		return newFailoverExecutor(cfg.resolvedEndpoints(), cache), nil
+		fe := newFailoverExecutor(cfg.resolvedEndpoints(), cache)
+		fe.strategy = cfg.Strategy
+		fe.rr = rr
+		return fe, nil
 	}
 	wrapper := func(script string, payload []byte) string {
 		return buildWrapper(script, payload, cfg.Constrained())
