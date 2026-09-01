@@ -113,7 +113,7 @@ func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func TestNegativeCacheMarkDownIsDownClear(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
-	c := newNegativeCache(30 * time.Second)
+	c := newNegativeCache(negativeCacheCooldown)
 	c.now = clock.now
 
 	c.markDown("a")
@@ -121,7 +121,7 @@ func TestNegativeCacheMarkDownIsDownClear(t *testing.T) {
 		t.Fatal("isDown(a) = false right after markDown, want true")
 	}
 
-	clock.advance(30 * time.Second)
+	clock.advance(negativeCacheCooldown)
 	if c.isDown("a") {
 		t.Error("isDown(a) = true after cooldown elapsed, want false")
 	}
@@ -135,7 +135,7 @@ func TestNegativeCacheMarkDownIsDownClear(t *testing.T) {
 
 func TestNegativeCacheConnectSkipsCooledDownEndpoint(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
-	cache := newNegativeCache(30 * time.Second)
+	cache := newNegativeCache(negativeCacheCooldown)
 	cache.now = clock.now
 	cache.markDown("a")
 
@@ -156,7 +156,7 @@ func TestNegativeCacheConnectSkipsCooledDownEndpoint(t *testing.T) {
 
 func TestNegativeCacheConnectFallsBackWhenAllDown(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
-	cache := newNegativeCache(30 * time.Second)
+	cache := newNegativeCache(negativeCacheCooldown)
 	cache.now = clock.now
 	cache.markDown("a")
 	cache.markDown("b")
@@ -178,7 +178,7 @@ func TestNegativeCacheConnectFallsBackWhenAllDown(t *testing.T) {
 
 func TestNegativeCacheConnectMarksFailureAndClearsSuccess(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
-	cache := newNegativeCache(30 * time.Second)
+	cache := newNegativeCache(negativeCacheCooldown)
 	cache.now = clock.now
 
 	fe := newFailoverExecutor([]Config{{Host: "a"}, {Host: "b"}}, cache)
@@ -201,7 +201,7 @@ func TestNegativeCacheConnectMarksFailureAndClearsSuccess(t *testing.T) {
 
 func TestNegativeCacheSharedAcrossExecutorsSkipsDownHost(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
-	cache := newNegativeCache(30 * time.Second)
+	cache := newNegativeCache(negativeCacheCooldown)
 	cache.now = clock.now
 
 	fe1 := newFailoverExecutor([]Config{{Host: "a"}, {Host: "b"}}, cache)

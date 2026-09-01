@@ -24,10 +24,11 @@ const minConnectBudget = 5 * time.Second
 const maxConnectBudget = 15 * time.Second
 
 // negativeCacheCooldown is how long an endpoint whose connect just failed is
-// skipped before being probed again. Long enough that a hung endpoint is not
-// re-probed on every reconnection (its full connect budget is the cost each
-// time), short enough that a recovered endpoint is picked up again promptly.
-const negativeCacheCooldown = 30 * time.Second
+// skipped before being probed again. Long enough that a hung/black-hole endpoint
+// is not re-probed repeatedly during a run (its full connect budget is the cost
+// each time); a recovered peer is picked up on the next process/run or via the
+// all-down fallback, so re-preferring it mid-run has no benefit.
+const negativeCacheCooldown = 5 * time.Minute
 
 // negativeCache remembers endpoints whose connect recently failed so the
 // failover executor can skip a hung/black-hole endpoint instead of paying its
