@@ -71,7 +71,7 @@ func (e *endTransport) Create(ctx context.Context, _ map[string]string, _ string
 		WithAction(wsman.ActionCreate).
 		WithTo(e.endpoint).
 		WithResourceURI(wsman.ResourceURIWinRS).
-		WithMessageID("uuid:" + randUUID()).
+		WithMessageID("uuid:"+randUUID()).
 		WithReplyTo(wsman.AddressAnonymous).
 		WithMaxEnvelopeSize(512000).
 		WithOperationTimeout("PT60S").

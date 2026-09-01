@@ -136,7 +136,7 @@ func TestResolvedEndpointsPerHostDefaults(t *testing.T) {
 		Username: "u",
 		Port:     5986, // shared fallback for endpoints without their own port
 		Endpoints: []Endpoint{
-			{Host: "dc1.corp.local"},                       // derive SPN + inherit shared port
+			{Host: "dc1.corp.local"},                                // derive SPN + inherit shared port
 			{Host: "dc2.corp.local", Port: 5985, SPN: "HTTP/alias"}, // full override
 		},
 	}
