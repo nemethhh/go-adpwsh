@@ -67,3 +67,23 @@ func TestNewReportsConstrained(t *testing.T) {
 		t.Fatal("constrained endpoint must report Constrained()==true")
 	}
 }
+
+func TestNewMultiEndpointBuildsPool(t *testing.T) {
+	tr, err := New(Config{
+		Username:  "u",
+		Endpoints: []Endpoint{{Host: "h1"}, {Host: "h2"}},
+	})
+	if err != nil {
+		t.Fatalf("New with endpoints: %v", err)
+	}
+	if tr == nil || tr.Pool == nil {
+		t.Fatal("want a non-nil pooled transport")
+	}
+	_ = tr.Close()
+}
+
+func TestNewRejectsEmptyEndpointHost(t *testing.T) {
+	if _, err := New(Config{Endpoints: []Endpoint{{Host: ""}}}); err == nil {
+		t.Error("empty endpoint host: want error from Validate")
+	}
+}

@@ -96,11 +96,7 @@ func New(cfg Config) (*Transport, error) {
 	}
 	cfg = cfg.WithDefaults()
 	build := func() (warm.Executor, error) {
-		c, err := newClient(cfg)
-		if err != nil {
-			return nil, err
-		}
-		return &psrpExecutor{client: c}, nil
+		return newFailoverExecutor(cfg.resolvedEndpoints()), nil
 	}
 	wrapper := func(script string, payload []byte) string {
 		return buildWrapper(script, payload, cfg.Constrained())
