@@ -21,6 +21,9 @@ type core struct {
 	repl   ReplicationConfig
 	log    Logger
 	locks  *keyedMutex
+
+	// dialect selects which script set exec composes from.
+	dialect Dialect
 }
 
 // exec runs one operation: it injects the pinned server and the credential,
@@ -54,7 +57,7 @@ func (c *core) exec(ctx context.Context, op string, payload map[string]any, out 
 			scriptOp = aclCLMVariant(op)
 		}
 	}
-	script, err := adscript.Script(scriptOp)
+	script, err := adscript.ScriptFor(c.dialect.String(), scriptOp)
 	if err != nil {
 		return &Error{Kind: KindUnknown, Op: op, Err: err}
 	}

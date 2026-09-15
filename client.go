@@ -29,14 +29,24 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.Transport == nil {
 		return nil, &Error{Kind: KindTransport, Op: "New", Err: errors.New("adpwsh: Config.Transport is required")}
 	}
+	if cfg.Dialect == DialectPSOpenAD && cfg.Replication.ForceSync {
+		return nil, &Error{
+			Kind: KindConstraint,
+			Op:   "New",
+			Err: errors.New("Replication.ForceSync is not supported with DialectPSOpenAD: " +
+				"forcing replication needs a rootDSE modify that PSOpenAD cannot express. " +
+				"The polling replication wait (Wait without ForceSync) is supported."),
+		}
+	}
 	c := &core{
-		tr:     cfg.Transport,
-		server: cfg.Server,
-		cred:   cfg.Credential,
-		retry:  cfg.Retry.withDefaults(),
-		repl:   cfg.Replication.withDefaults(),
-		log:    cfg.Log,
-		locks:  newKeyedMutex(),
+		tr:      cfg.Transport,
+		server:  cfg.Server,
+		cred:    cfg.Credential,
+		retry:   cfg.Retry.withDefaults(),
+		repl:    cfg.Replication.withDefaults(),
+		dialect: cfg.Dialect,
+		log:     cfg.Log,
+		locks:   newKeyedMutex(),
 	}
 
 	var rootDSE struct {

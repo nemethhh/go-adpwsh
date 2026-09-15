@@ -5,10 +5,39 @@ import (
 	"time"
 )
 
+// Dialect selects which PowerShell script set an operation runs.
+//
+// The zero value is DialectADWS: Microsoft's ActiveDirectory module over AD Web
+// Services, which requires a Windows host. DialectPSOpenAD runs the PSOpenAD
+// module over LDAP and works anywhere PowerShell 7.4 does, including Linux.
+//
+// There is deliberately no auto-detection. A dialect decides which module
+// executes, and guessing it is the same class of mistake as guessing a
+// transport.
+type Dialect int
+
+const (
+	DialectADWS Dialect = iota
+	DialectPSOpenAD
+)
+
+func (d Dialect) String() string {
+	switch d {
+	case DialectPSOpenAD:
+		return "psopenad"
+	default:
+		return "adws"
+	}
+}
+
 // Config configures a Client. Transport is the only required field.
 type Config struct {
 	// Transport is how PowerShell reaches the jump box. Required.
 	Transport Transport
+
+	// Dialect selects the script set. The zero value, DialectADWS, preserves
+	// the historical behaviour exactly.
+	Dialect Dialect
 
 	// Server pins the domain controller every cmdlet targets. When empty it is
 	// discovered once in New and never changes for this client's lifetime.

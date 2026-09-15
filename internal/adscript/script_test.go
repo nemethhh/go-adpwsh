@@ -274,3 +274,33 @@ func fragmentOnly(t *testing.T, composed string) string {
 	s := strings.TrimPrefix(composed, string(pre))
 	return strings.TrimSuffix(s, string(epi))
 }
+
+func TestScriptForRejectsUnknownDialect(t *testing.T) {
+	if _, err := ScriptFor("nonsense", OpOURead); err == nil {
+		t.Fatal("ScriptFor with an unknown dialect returned no error")
+	}
+}
+
+func TestScriptForADWSMatchesScript(t *testing.T) {
+	want, err := Script(OpOURead)
+	if err != nil {
+		t.Fatalf("Script: %v", err)
+	}
+	got, err := ScriptFor("adws", OpOURead)
+	if err != nil {
+		t.Fatalf("ScriptFor: %v", err)
+	}
+	if got != want {
+		t.Fatal("ScriptFor(\"adws\", …) differs from Script(…)")
+	}
+}
+
+func TestScriptForPSOpenADReportsMissingFragment(t *testing.T) {
+	_, err := ScriptFor("psopenad", OpOURead)
+	if err == nil {
+		t.Fatal("expected an error while the psopenad dialect is unimplemented")
+	}
+	if !strings.Contains(err.Error(), "psopenad") || !strings.Contains(err.Error(), OpOURead) {
+		t.Fatalf("error should name the dialect and the op, got: %v", err)
+	}
+}
