@@ -10,7 +10,7 @@
             $match = @($t.sd.DiscretionaryAcl | Where-Object {
                 "$($_.Sid)" -eq "$($want.Sid)" -and
                 "$($_.AceType)" -eq "$($want.AceType)" -and
-                [int]$_.AccessMask -eq [int]$want.AccessMask -and
+                [uint32]$_.AccessMask -eq [uint32]$want.AccessMask -and
                 "$(Get-AdPropValue $_ 'ObjectAceType')" -eq $wantOt })
             foreach ($m in $match) { $null = $t.sd.DiscretionaryAcl.Remove($m) }
         }

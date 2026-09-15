@@ -375,6 +375,10 @@ $AD_RIGHTS_FULL = 0xF01FF
 # NoPropagateInherit is what distinguishes the two "children" forms from the two
 # "descendents" forms; ObjectInherit plays no part, because every AD object is a
 # container as far as inheritance is concerned.
+# ActiveDirectoryRights is a uint, and the generic bits - GenericRead is
+# 0x80000000 - do not fit a signed Int32, so an access mask is always compared
+# as [uint32]. [int] on one throws outright on any ACE that carries a generic
+# right, which a real DACL may well do.
 function New-AdAceFromSpec($spec) {
     $sid    = [PSOpenAD.Security.SecurityIdentifier]::new([string]$spec.trustee)
     $rights = [PSOpenAD.Security.ActiveDirectoryRights](@($spec.rights) -join ', ')
@@ -477,7 +481,7 @@ function Set-AdProtected($identity, [bool]$on) {
     $sd  = $cur.sd
     $existing = @($sd.DiscretionaryAcl | Where-Object {
         "$($_.AceType)" -like 'AccessDenied*' -and "$($_.Sid)" -eq 'S-1-1-0' -and
-        (([int]$_.AccessMask) -band 0x10000) -ne 0 })
+        (([uint32]$_.AccessMask) -band 0x10000) -ne 0 })
     if ($on -and $existing.Count -eq 0) {
         $ace = [PSOpenAD.Security.Ace]::new(
             [PSOpenAD.Security.AceType]::AccessDenied, [PSOpenAD.Security.AceFlags]::None,
