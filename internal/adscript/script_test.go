@@ -295,12 +295,48 @@ func TestScriptForADWSMatchesScript(t *testing.T) {
 	}
 }
 
+// A fragment the dialect does not carry must be reported by name, so a
+// half-finished dialect fails loudly on the missing op rather than silently
+// running another dialect's script. Asserted on an op that exists in neither
+// dialect, so this keeps testing the error path once coverage is complete.
 func TestScriptForPSOpenADReportsMissingFragment(t *testing.T) {
-	_, err := ScriptFor("psopenad", OpOURead)
+	const missing = "no_such_op"
+	_, err := ScriptFor("psopenad", missing)
 	if err == nil {
-		t.Fatal("expected an error while the psopenad dialect is unimplemented")
+		t.Fatal("expected an error for an op the dialect has no fragment for")
 	}
-	if !strings.Contains(err.Error(), "psopenad") || !strings.Contains(err.Error(), OpOURead) {
+	if !strings.Contains(err.Error(), "psopenad") || !strings.Contains(err.Error(), missing) {
 		t.Fatalf("error should name the dialect and the op, got: %v", err)
+	}
+}
+
+// The psopenad dialect must eventually cover every op the adws dialect does.
+// Ops still unimplemented are listed here and the list shrinks to empty.
+func TestPSOpenADDialectCoverage(t *testing.T) {
+	unimplemented := map[string]bool{
+		OpRootDSE: true, OpDCList: true, OpDeletedProbe: true,
+		OpReplicate: true, OpReplicateVerify: true,
+		OpGroupMembersRead: true, OpGroupMembersReadRecursive: true,
+		OpGroupMembersAdd: true, OpGroupMembersRemove: true, OpGroupMemberCheck: true,
+		OpUserSetPassword: true,
+		OpGMSACreate:      true, OpGMSARead: true, OpGMSAUpdate: true,
+		OpGMSADelete: true, OpGMSASearch: true,
+		OpComputerCreate: true, OpComputerRead: true, OpComputerUpdate: true,
+		OpComputerDelete: true, OpComputerSearch: true,
+		OpACLRead: true, OpACLGrant: true, OpACLRevoke: true,
+		OpACLReadCLM: true, OpACLGrantCLM: true, OpACLRevokeCLM: true,
+		OpSchemaResolve: true,
+	}
+	for _, op := range Ops() {
+		_, err := ScriptFor("psopenad", op)
+		if unimplemented[op] {
+			if err == nil {
+				t.Errorf("op %q is implemented but still listed as unimplemented", op)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("op %q: %v", op, err)
+		}
 	}
 }

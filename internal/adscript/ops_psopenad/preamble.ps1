@@ -182,6 +182,35 @@ function Convert-AdServiceAccount($o) {
     }
 }
 
+# $p.set carries two kinds of entry. The typed fields arrive under Microsoft
+# cmdlet parameter names and each fragment maps those per class, because the
+# mapping differs per class. Add/Remove/Replace/Clear arrive under raw LDAP
+# attribute names from the Go side's AttrOps, and pass straight through, because
+# Set-OpenADObject takes them under exactly those parameter names.
+#
+# Dropping them is not an option: clearing a description is expressed as
+# Clear=@('description'), not as an empty Replace, so a fragment that forwarded
+# only its own $repl would silently ignore every clear.
+function Set-AdAttributes($identity, $s, $repl) {
+    $splat = @{}
+    if ($s.ContainsKey('Replace') -and $s.Replace) {
+        foreach ($k in $s.Replace.Keys) { $repl[$k] = $s.Replace[$k] }
+    }
+    if ($repl.Count -gt 0) { $splat['Replace'] = $repl }
+    foreach ($k in @('Add','Remove','Clear')) {
+        if ($s.ContainsKey($k) -and $s[$k]) { $splat[$k] = $s[$k] }
+    }
+    if ($splat.Count -eq 0) { return }
+    Set-OpenADObject @common -Identity $identity @splat
+}
+
+# accountExpires is a FILETIME string; 0 means "never". The Go side sends an
+# RFC3339 string or a null.
+function ConvertTo-AdAccountExpires($v) {
+    if ($null -eq $v) { return '0' }
+    return "$(([datetime]$v).ToUniversalTime().ToFileTimeUtc())"
+}
+
 function Test-AdPresence($id) {
     try {
         $null = Get-OpenADObject -Session $session -Identity $id -ErrorAction Stop
