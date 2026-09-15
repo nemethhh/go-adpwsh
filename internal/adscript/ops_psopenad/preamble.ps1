@@ -19,6 +19,31 @@ if ($p.credential) {
 $credOnly = @{}
 if ($common.ContainsKey('Credential')) { $credOnly['Credential'] = $common['Credential'] }
 
+# $p.project is the ActiveDirectory module's property vocabulary, and several of
+# its entries are synthetic rather than LDAP attributes:
+# ProtectedFromAccidentalDeletion, CannotChangePassword, PasswordNeverExpires,
+# GroupScope, GroupCategory, KerberosEncryptionType, AccountExpirationDate,
+# PrincipalsAllowedTo*. PSOpenAD validates -Properties against the real schema
+# and rejects those outright, so this dialect ignores $p.project and requests
+# the underlying attributes its own converters read.
+#
+# Properties the OpenAD* classes already carry - SamAccountName, SID, Enabled,
+# UserPrincipalName, GivenName, Surname, GroupScope, GroupCategory,
+# userAccountControl - are fetched by the cmdlet regardless and are not listed.
+$AD_PROPS_OU    = @('description', 'nTSecurityDescriptor')
+$AD_PROPS_GROUP = @('description', 'managedBy')
+$AD_PROPS_USER  = @('description', 'displayName', 'pwdLastSet', 'accountExpires',
+                    'nTSecurityDescriptor')
+$AD_PROPS_COMPUTER = @('description', 'displayName', 'location', 'managedBy',
+                       'servicePrincipalName', 'msDS-AllowedToDelegateTo',
+                       'msDS-AllowedToActOnBehalfOfOtherIdentity',
+                       'msDS-SupportedEncryptionTypes', 'accountExpires',
+                       'operatingSystem', 'operatingSystemVersion',
+                       'operatingSystemServicePack')
+$AD_PROPS_GMSA  = @('description', 'displayName', 'servicePrincipalName',
+                    'msDS-GroupMSAMembership', 'msDS-SupportedEncryptionTypes',
+                    'msDS-ManagedPasswordInterval', 'accountExpires')
+
 function Get-AdPropValue($obj, $name) {
     if ($null -eq $obj) { return $null }
     $pr = $obj.PSObject.Properties[$name]
@@ -51,6 +76,17 @@ function ConvertTo-AdScalar($v) {
     return [string]$v
 }
 
+# schemaIDGUID is an octet string, so it arrives as a PSObject-wrapped byte
+# array rather than a Guid or a string; rightsGUID is a plain string attribute.
+# Both normalise to the canonical 8-4-4-4-12 form the ACL object-type fields
+# expect, which is what the AD cmdlets emit.
+function ConvertTo-AdGuidString($v) {
+    if ($null -eq $v) { return $null }
+    if ($v -is [Guid]) { return $v.ToString() }
+    if ($v -is [string]) { return ([Guid]$v).ToString() }
+    return ([Guid]::new([byte[]]@($v))).ToString()
+}
+
 $CHANGE_PASSWORD_RIGHT = [Guid]'ab721a53-1e2f-11d0-9819-00aa0040529b'
 
 function Test-AdDenyAce($sd, [Guid]$objectType, [string[]]$trustees) {
@@ -78,14 +114,29 @@ function Convert-AdOU($o) {
     }
 }
 
+# Scope and category are derived from the raw groupType bits, which are the same
+# bits the create and update fragments write, rather than from PSOpenAD's
+# GroupScope and GroupCategory properties.
+#
+# This was found the hard way: that property switched on the whole groupType
+# value instead of masking the scope bits, so a security group - which always
+# carries IsSecurity, 0x80000000 - never matched Global or DomainLocal and read
+# back as Universal. A fix is landing on the fork's main. Reading the bits
+# directly is correct either way and keeps the emitted contract independent of
+# how the module chooses to present them, so it stays after the fix lands.
 function Convert-AdGroup($o) {
+    $gt = [uint32](Get-AdPropValue $o 'GroupType')
+    if (($gt -band 0x4) -ne 0)      { $scope = 'domainlocal' }
+    elseif (($gt -band 0x2) -ne 0)  { $scope = 'global' }
+    else                            { $scope = 'universal' }
+    $category = if (($gt -band 0x80000000) -ne 0) { 'security' } else { 'distribution' }
     return [ordered]@{
         objectGUID        = $o.ObjectGuid.ToString()
         distinguishedName = $o.DistinguishedName
         name              = $o.Name
         samAccountName    = $o.SamAccountName
-        scope             = "$($o.GroupScope)".ToLowerInvariant()
-        category          = "$($o.GroupCategory)".ToLowerInvariant()
+        scope             = $scope
+        category          = $category
         description       = (ConvertTo-AdScalar (Get-AdPropValue $o 'Description'))
         managedBy         = (Get-AdPropValue $o 'ManagedBy')
         sid               = $o.SID.Value

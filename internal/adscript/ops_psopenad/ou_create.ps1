@@ -5,4 +5,4 @@
         if ($c.ContainsKey('ProtectedFromAccidentalDeletion') -and $c.ProtectedFromAccidentalDeletion) {
             Set-AdProtected $new.ObjectGuid $true
         }
-        Convert-AdOU (Get-OpenADObject @common -Identity $new.ObjectGuid -Properties $p.project)
+        Convert-AdOU (Get-OpenADObject @common -Identity $new.ObjectGuid -Properties $AD_PROPS_OU)

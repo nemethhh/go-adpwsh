@@ -1,1 +1,1 @@
-        Convert-AdOU (Get-OpenADObject @common -Identity $p.identity -Properties $p.project)
+        Convert-AdOU (Get-OpenADObject @common -Identity $p.identity -Properties $AD_PROPS_OU)

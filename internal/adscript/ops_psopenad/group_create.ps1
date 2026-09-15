@@ -10,4 +10,4 @@
         if ("$($c.GroupCategory)".ToLowerInvariant() -ne 'distribution') { $gt = $gt -bor 0x80000000 }
         $attrs['groupType'] = [int]$gt
         $new = New-OpenADObject @common -Name $c.Name -Type group -Path $c.Path -OtherAttributes $attrs -PassThru
-        Convert-AdGroup (Get-OpenADGroup @common -Identity $new.ObjectGuid -Properties $p.project)
+        Convert-AdGroup (Get-OpenADGroup @common -Identity $new.ObjectGuid -Properties $AD_PROPS_GROUP)

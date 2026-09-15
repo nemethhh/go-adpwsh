@@ -42,4 +42,4 @@
         }
         if ($p.rename) { $r = $p.rename; Rename-OpenADObject @common -Identity $r.Identity -NewName $r.NewName }
         if ($p.move)   { $m = $p.move;   Move-OpenADObject   @common -Identity $m.Identity -TargetPath $m.TargetPath }
-        Convert-AdServiceAccount (Get-OpenADServiceAccount @common -Identity $p.identity -Properties $p.project)
+        Convert-AdServiceAccount (Get-OpenADServiceAccount @common -Identity $p.identity -Properties $AD_PROPS_GMSA)

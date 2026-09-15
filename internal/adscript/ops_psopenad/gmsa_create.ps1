@@ -25,4 +25,4 @@
                 (New-AdPrincipalSd $c.PrincipalsAllowedToRetrieveManagedPassword)
         }
         $new = New-OpenADObject @common -Name $c.Name -Type 'msDS-GroupManagedServiceAccount' -Path $c.Path -OtherAttributes $attrs -PassThru
-        Convert-AdServiceAccount (Get-OpenADServiceAccount @common -Identity $new.ObjectGuid -Properties $p.project)
+        Convert-AdServiceAccount (Get-OpenADServiceAccount @common -Identity $new.ObjectGuid -Properties $AD_PROPS_GMSA)

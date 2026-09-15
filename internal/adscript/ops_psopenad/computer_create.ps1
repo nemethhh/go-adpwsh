@@ -31,4 +31,4 @@
                 (New-AdPrincipalSd $c.PrincipalsAllowedToDelegateToAccount)
         }
         $new = New-OpenADObject @common -Name $c.Name -Type computer -Path $c.Path -OtherAttributes $attrs -PassThru
-        Convert-AdComputer (Get-OpenADComputer @common -Identity $new.ObjectGuid -Properties $p.project)
+        Convert-AdComputer (Get-OpenADComputer @common -Identity $new.ObjectGuid -Properties $AD_PROPS_COMPUTER)
