@@ -316,10 +316,7 @@ func TestPSOpenADDialectCoverage(t *testing.T) {
 	unimplemented := map[string]bool{
 		OpRootDSE: true, OpDCList: true, OpDeletedProbe: true,
 		OpReplicate: true, OpReplicateVerify: true,
-		OpGroupMembersRead: true, OpGroupMembersReadRecursive: true,
-		OpGroupMembersAdd: true, OpGroupMembersRemove: true, OpGroupMemberCheck: true,
-		OpUserSetPassword: true,
-		OpACLRead:         true, OpACLGrant: true, OpACLRevoke: true,
+		OpACLRead: true, OpACLGrant: true, OpACLRevoke: true,
 		OpACLReadCLM: true, OpACLGrantCLM: true, OpACLRevokeCLM: true,
 		OpSchemaResolve: true,
 	}
