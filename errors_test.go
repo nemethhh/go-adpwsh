@@ -110,3 +110,32 @@ func TestErrorUnwrap(t *testing.T) {
 		t.Error("Kind sentinel must still match through Unwrap")
 	}
 }
+
+func TestClassifyPSOpenADCmdletNotFound(t *testing.T) {
+	// Get-OpenADUser -Identity nosuch raises ItemNotFoundException with no
+	// DiagnosticsMessage, so there is no Win32 code to classify on.
+	if got := Classify("System.Management.Automation.ItemNotFoundException", 0); got != KindNotFound {
+		t.Fatalf("Classify(ItemNotFoundException, 0) = %v, want KindNotFound", got)
+	}
+}
+
+func TestClassifyPSOpenADLDAPExceptionFallsBackToUnknown(t *testing.T) {
+	// A bare LDAPException with no recognised code must fail closed, never retry.
+	if got := Classify("PSOpenAD.LDAP.LDAPException", 0); got != KindUnknown {
+		t.Fatalf("Classify(LDAPException, 0) = %v, want KindUnknown", got)
+	}
+}
+
+func TestClassifyPrefersTheWin32Code(t *testing.T) {
+	// 0x2071 is ERROR_DS_OBJ_STRING_NAME_EXISTS, observed verbatim from a real
+	// DC as "00002071: UpdErr: … (ENTRY_EXISTS)".
+	if got := Classify("PSOpenAD.LDAP.LDAPException", 0x2071); got != KindAlreadyExists {
+		t.Fatalf("Classify(LDAPException, 0x2071) = %v, want KindAlreadyExists", got)
+	}
+	if got := Classify("PSOpenAD.LDAP.LDAPException", 0x208D); got != KindNotFound {
+		t.Fatalf("Classify(LDAPException, 0x208D) = %v, want KindNotFound", got)
+	}
+	if got := Classify("PSOpenAD.LDAP.LDAPException", 0x052D); got != KindPassword {
+		t.Fatalf("Classify(LDAPException, 0x052D) = %v, want KindPassword", got)
+	}
+}

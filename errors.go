@@ -235,6 +235,17 @@ var classByType = map[string]Kind{
 	"ADRecordException":                     KindUnknown,
 	"ADSystemException":                     KindUnknown,
 	"UnauthorizedAccessException":           KindDenied,
+
+	// PSOpenAD dialect. Cmdlet-level failures carry no Win32 code, so they are
+	// classified on the type name alone. shortTypeName strips the namespace, so
+	// these are keyed on the short name exactly as the AD types above are.
+	//
+	// LDAPException maps to KindUnknown deliberately: it is a carrier type whose
+	// meaning lives in the Win32 code, and Classify consults classByCode first.
+	// Mapping it to anything else would mask a code the table does not yet know,
+	// and KindUnknown is never retried.
+	"ItemNotFoundException": KindNotFound,
+	"LDAPException":         KindUnknown,
 }
 
 // Classify normalizes an AD exception into a Kind. It fails closed: an

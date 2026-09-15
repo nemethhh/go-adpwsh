@@ -10,6 +10,13 @@ import (
 // using one compiles fine here and then fails on a 5.1 endpoint at run time.
 // This is the static gate; the executing gate is the dual-engine acceptance run
 // on the lab, because the in-memory fake never runs PowerShell at all.
+//
+// The guard covers the ADWS dialect only, and does so by construction: it walks
+// Ops() through Script(), which is the ADWS set. The psopenad dialect is
+// deliberately out of scope - it requires PowerShell 7.4 and uses 7-only
+// constructs on purpose. Do not widen this to ScriptFor without splitting the
+// banned list per dialect. TestPSOpenADDialectIsExemptFromThe51Guard below
+// asserts that the exemption is real rather than vacuous.
 func TestScriptsAvoidPowerShell7Constructs(t *testing.T) {
 	banned := []struct {
 		what string
@@ -71,5 +78,20 @@ func TestPayloadConverterShortCircuitsScalars(t *testing.T) {
 		if !regexp.MustCompile(regexp.QuoteMeta(want)).MatchString(s) {
 			t.Errorf("composed script is missing %q", want)
 		}
+	}
+}
+
+// The exemption above is only meaningful while the psopenad dialect actually
+// exists and actually uses a construct the guard bans. If this test starts
+// failing, either the dialect was deleted or it was rewritten to 5.1
+// compatibility - in both cases the exemption comment above is now a lie.
+func TestPSOpenADDialectIsExemptFromThe51Guard(t *testing.T) {
+	pre, err := files.ReadFile("ops_psopenad/preamble.ps1")
+	if err != nil {
+		t.Fatalf("the psopenad dialect must exist for its guard exemption to mean anything: %v", err)
+	}
+	if !regexp.MustCompile(`(?i)ConvertFrom-Json[^\n]*-AsHashtable`).Match(pre) {
+		t.Error("the psopenad preamble no longer uses a PowerShell 7-only construct; " +
+			"the 5.1 guard exemption is now unnecessary and should be removed")
 	}
 }
