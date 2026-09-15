@@ -15,8 +15,13 @@
 //
 // Optional:
 //
-//	AD_ACC_PWSH_PATH  the pwsh executable (default "pwsh")
-//	AD_ACC_DIALECT    "psopenad" (default) or "adws"
+//	AD_ACC_PWSH_PATH    the pwsh executable (default "pwsh")
+//	AD_ACC_DIALECT      "psopenad" (default) or "adws"
+//	AD_ACC_CONCURRENCY  simultaneous pwsh processes (default 16)
+//	AD_ACC_LARGE_COUNT  members in the ranged-retrieval suite (default 2000)
+//
+// The cross-dialect comparison lives in acc_differential_test.go and takes its
+// own variables.
 package adpwsh_test
 
 import (
@@ -471,6 +476,41 @@ func TestAccDialectOpenQuestions(t *testing.T) {
 			if got.Scope != want {
 				t.Fatalf("Scope = %q, want %q", got.Scope, want)
 			}
+		}
+	})
+
+	t.Run("CannotChangePassword round-trips", func(t *testing.T) {
+		// canChangePassword is read from Deny ACEs on the change-password
+		// extended right, and written as the same pair of ACEs Set-ADUser
+		// writes - Everyone and Principal Self. Nothing else exercises the
+		// write side, and a flag that reads back wrong is invisible until a
+		// user cannot change their password.
+		name := accShortName("cp")
+		pw := adpwsh.NewSecret("Zq7!vMx2Lp#9Tr4W")
+		enabled := true
+		cannot := false
+		u, err := c.User.Create(ctx, adpwsh.UserSpec{
+			SamAccountName: name, Container: accContainer(t),
+			Password: &pw, Enabled: &enabled, CanChangePassword: &cannot,
+		})
+		if err != nil {
+			t.Fatalf("User.Create: %v", err)
+		}
+		t.Cleanup(func() { _ = c.User.Delete(context.Background(), adpwsh.ByGUID(u.GUID)) })
+		if u.CanChangePassword {
+			t.Error("CanChangePassword=false was requested on create but reads back true")
+		}
+
+		allow := true
+		back, err := c.User.Update(ctx, adpwsh.ByGUID(u.GUID), adpwsh.UserSpec{
+			SamAccountName: name, Container: accContainer(t),
+			Enabled: &enabled, CanChangePassword: &allow,
+		})
+		if err != nil {
+			t.Fatalf("User.Update: %v", err)
+		}
+		if !back.CanChangePassword {
+			t.Error("CanChangePassword=true was requested on update but reads back false")
 		}
 	})
 
