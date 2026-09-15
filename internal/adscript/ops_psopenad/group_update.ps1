@@ -6,7 +6,7 @@
             if ($s.ContainsKey('SamAccountName')) { $repl['sAMAccountName'] = $s.SamAccountName }
             if ($s.ContainsKey('GroupScope') -or $s.ContainsKey('GroupCategory')) {
                 $cur = Get-OpenADGroup @common -Identity $p.identity -Properties groupType
-                $gt  = [int]$cur.GroupType
+                $gt  = [uint32](Get-AdPropValue $cur 'GroupType')
                 if ($s.ContainsKey('GroupScope')) {
                     $bit = switch ("$($s.GroupScope)".ToLowerInvariant()) {
                         'domainlocal' { 4 }
@@ -20,7 +20,7 @@
                     if ("$($s.GroupCategory)".ToLowerInvariant() -eq 'distribution') { $gt = $gt -band (-bnot 0x80000000) }
                     else { $gt = $gt -bor 0x80000000 }
                 }
-                $repl['groupType'] = [int]$gt
+                $repl['groupType'] = (ConvertTo-AdGroupTypeInt32 $gt)
             }
             # A scope change between global and domainlocal is illegal without
             # passing through universal. The DC enforces that and the error

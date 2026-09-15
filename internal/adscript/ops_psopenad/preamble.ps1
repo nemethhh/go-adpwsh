@@ -114,6 +114,13 @@ function Convert-AdOU($o) {
     }
 }
 
+# groupType carries IsSecurity, 0x80000000, so its value does not fit a signed
+# Int32 and [int] on it throws. AD stores the attribute as a 32-bit signed
+# integer, so the write is the unchecked reinterpretation of those same bits.
+function ConvertTo-AdGroupTypeInt32([uint32]$bits) {
+    return [BitConverter]::ToInt32([BitConverter]::GetBytes($bits), 0)
+}
+
 # Scope and category are derived from the raw groupType bits, which are the same
 # bits the create and update fragments write, rather than from PSOpenAD's
 # GroupScope and GroupCategory properties.
@@ -393,15 +400,31 @@ function Get-AdDacl($identity) {
     return @{ dn = $o.DistinguishedName; guid = $o.ObjectGuid.ToString(); sd = $o.NTSecurityDescriptor }
 }
 
-# -SecurityMask Dacl states which components of the descriptor the write applies
-# to. A structurally DACL-only descriptor is accepted without it, but stating the
-# intent is what lets a non-admin caller write one.
+# -SecurityMask Dacl states that the write applies to the DACL alone, and the
+# value has to agree with that: a descriptor still carrying a SACL is refused
+# with 0000053A CONSTRAINT_ATT_TYPE, because writing a SACL needs
+# SeSecurityPrivilege and was not what the mask asked for. Get-OpenADObject
+# returns the whole descriptor - owner, group, DACL and SACL - so a
+# read-modify-write has to narrow it back down before sending it.
+#
+# So the value written is rebuilt as DACL-only. The DACL's own control bits are
+# carried over, because they are part of what the DACL means: dropping
+# DiscretionaryAclAutoInherited or DiscretionaryAclProtected would silently
+# change how inheritance applies to the object.
 #
 # The descriptor is passed as an object. Never pass a byte[] through -Replace: a
 # PSObject-wrapped array was silently stringified before the fork's fix, and the
 # object is the correct API regardless.
+$AD_DACL_CONTROL_BITS = 0x0004 -bor 0x0008 -bor 0x0040 -bor 0x0100 -bor 0x0400 -bor 0x1000
+
 function Set-AdDacl($identity, $sd) {
-    Set-OpenADObject @common -Identity $identity -Replace @{nTSecurityDescriptor = $sd} -SecurityMask Dacl
+    $out = [PSOpenAD.Security.CommonSecurityDescriptor]::new()
+    $keep = ([int]$sd.Flags) -band $AD_DACL_CONTROL_BITS
+    $out.Flags = [PSOpenAD.Security.ControlFlags](
+        $keep -bor [int][PSOpenAD.Security.ControlFlags]::SelfRelative -bor
+                   [int][PSOpenAD.Security.ControlFlags]::DiscretionaryAclPresent)
+    $out.DiscretionaryAcl = $sd.DiscretionaryAcl
+    Set-OpenADObject @common -Identity $identity -Replace @{nTSecurityDescriptor = $out} -SecurityMask Dacl
 }
 
 # ProtectedFromAccidentalDeletion is an explicit Deny of Delete and DeleteTree

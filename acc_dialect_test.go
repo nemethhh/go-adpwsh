@@ -249,6 +249,145 @@ func TestAccDialectOpenQuestions(t *testing.T) {
 		}
 	})
 
+	t.Run("an object-typed ACE round-trips", func(t *testing.T) {
+		// A delegation ACE differs from a full-control one only in its
+		// objectType, so losing that GUID would silently widen the grant.
+		ref := adpwsh.SchemaRef{Kind: adpwsh.RefAttribute, Name: "description"}
+		res, err := c.Schema.Resolve(ctx, []adpwsh.SchemaRef{ref})
+		if err != nil {
+			t.Fatalf("Schema.Resolve: %v", err)
+		}
+		objType := res[ref]
+
+		name := accName("ouacl")
+		ou, err := c.OU.Create(ctx, adpwsh.OUSpec{Name: name, Container: accContainer(t)})
+		if err != nil {
+			t.Fatalf("OU.Create: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = c.OU.Delete(context.Background(), adpwsh.ByGUID(ou.GUID), adpwsh.DeleteOptions{Unprotect: true})
+		})
+
+		// S-1-5-11 is Authenticated Users: always present, never a real grant
+		// worth keeping, and removed again below.
+		want := adpwsh.ACE{
+			Trustee:     "S-1-5-11",
+			Type:        adpwsh.ACEAllow,
+			Rights:      []adpwsh.Right{"ReadProperty", "WriteProperty"},
+			ObjectType:  objType,
+			Inheritance: adpwsh.InheritanceDescendants,
+		}
+		if err := c.ACL.Grant(ctx, adpwsh.ByGUID(ou.GUID), []adpwsh.ACE{want}); err != nil {
+			t.Fatalf("ACL.Grant: %v", err)
+		}
+
+		aces, err := c.ACL.Get(ctx, adpwsh.ByGUID(ou.GUID))
+		if err != nil {
+			t.Fatalf("ACL.Get: %v", err)
+		}
+		var found *adpwsh.ACE
+		for i := range aces {
+			a := aces[i]
+			if a.Trustee == want.Trustee && a.ObjectType == objType && !a.Inherited {
+				found = &aces[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("the granted ACE did not read back with objectType %s; got %d ACEs", objType, len(aces))
+		}
+		if found.Inheritance != adpwsh.InheritanceDescendants {
+			t.Errorf("Inheritance = %q, want %q", found.Inheritance, adpwsh.InheritanceDescendants)
+		}
+		if found.Type != adpwsh.ACEAllow {
+			t.Errorf("Type = %q, want Allow", found.Type)
+		}
+
+		if err := c.ACL.Revoke(ctx, adpwsh.ByGUID(ou.GUID), []adpwsh.ACE{want}); err != nil {
+			t.Fatalf("ACL.Revoke: %v", err)
+		}
+		after, err := c.ACL.Get(ctx, adpwsh.ByGUID(ou.GUID))
+		if err != nil {
+			t.Fatalf("ACL.Get after revoke: %v", err)
+		}
+		for _, a := range after {
+			if a.Trustee == want.Trustee && a.ObjectType == objType && !a.Inherited {
+				t.Error("the ACE survived the revoke")
+			}
+		}
+	})
+
+	t.Run("OU protection survives a move", func(t *testing.T) {
+		// Protection is a Deny of Delete, and a move is authorised through that
+		// same right, so it must be lifted before the move and reapplied after.
+		parent := accName("ouparent")
+		pou, err := c.OU.Create(ctx, adpwsh.OUSpec{Name: parent, Container: accContainer(t)})
+		if err != nil {
+			t.Fatalf("OU.Create parent: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = c.OU.Delete(context.Background(), adpwsh.ByGUID(pou.GUID), adpwsh.DeleteOptions{Unprotect: true})
+		})
+
+		name := accName("oumove")
+		protected := true
+		ou, err := c.OU.Create(ctx, adpwsh.OUSpec{
+			Name: name, Container: accContainer(t), Protected: &protected,
+		})
+		if err != nil {
+			t.Fatalf("OU.Create: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = c.OU.Delete(context.Background(), adpwsh.ByGUID(ou.GUID), adpwsh.DeleteOptions{Unprotect: true})
+		})
+		if !ou.Protected {
+			t.Fatal("Protected was requested on create but did not stick")
+		}
+
+		moved, err := c.OU.Update(ctx, adpwsh.ByGUID(ou.GUID), adpwsh.OUSpec{
+			Name: name, Container: pou.DN, Protected: &protected,
+		})
+		if err != nil {
+			t.Fatalf("OU.Update (move of a protected OU): %v", err)
+		}
+		if !moved.Protected {
+			t.Error("protection was not reapplied after the move")
+		}
+		if !strings.EqualFold(moved.Container, pou.DN) {
+			t.Errorf("Container = %q, want %q", moved.Container, pou.DN)
+		}
+	})
+
+	t.Run("group scope conversion global to universal to domainlocal", func(t *testing.T) {
+		// AD refuses global <-> domainlocal directly; universal is the required
+		// intermediate. The DC enforces that, and the dialect does not
+		// pre-validate it.
+		name := accName("gscope")
+		g, err := c.Group.Create(ctx, adpwsh.GroupSpec{
+			Name: name, SamAccountName: name, Container: accContainer(t),
+			Scope: adpwsh.GroupScopeGlobal, Category: adpwsh.GroupCategorySecurity,
+		})
+		if err != nil {
+			t.Fatalf("Group.Create: %v", err)
+		}
+		t.Cleanup(func() { _ = c.Group.Delete(context.Background(), adpwsh.ByGUID(g.GUID)) })
+
+		spec := adpwsh.GroupSpec{
+			Name: name, SamAccountName: name, Container: accContainer(t),
+			Category: adpwsh.GroupCategorySecurity,
+		}
+		for _, want := range []adpwsh.GroupScope{adpwsh.GroupScopeUniversal, adpwsh.GroupScopeDomainLocal} {
+			spec.Scope = want
+			got, err := c.Group.Update(ctx, adpwsh.ByGUID(g.GUID), spec)
+			if err != nil {
+				t.Fatalf("Group.Update to %s: %v", want, err)
+			}
+			if got.Scope != want {
+				t.Fatalf("Scope = %q, want %q", got.Scope, want)
+			}
+		}
+	})
+
 	t.Run("schema_resolve emits canonical GUIDs", func(t *testing.T) {
 		ref := adpwsh.SchemaRef{Kind: adpwsh.RefAttribute, Name: "description"}
 		got, err := c.Schema.Resolve(ctx, []adpwsh.SchemaRef{ref})
