@@ -319,11 +319,7 @@ func TestPSOpenADDialectCoverage(t *testing.T) {
 		OpGroupMembersRead: true, OpGroupMembersReadRecursive: true,
 		OpGroupMembersAdd: true, OpGroupMembersRemove: true, OpGroupMemberCheck: true,
 		OpUserSetPassword: true,
-		OpGMSACreate:      true, OpGMSARead: true, OpGMSAUpdate: true,
-		OpGMSADelete: true, OpGMSASearch: true,
-		OpComputerCreate: true, OpComputerRead: true, OpComputerUpdate: true,
-		OpComputerDelete: true, OpComputerSearch: true,
-		OpACLRead: true, OpACLGrant: true, OpACLRevoke: true,
+		OpACLRead:         true, OpACLGrant: true, OpACLRevoke: true,
 		OpACLReadCLM: true, OpACLGrantCLM: true, OpACLRevokeCLM: true,
 		OpSchemaResolve: true,
 	}

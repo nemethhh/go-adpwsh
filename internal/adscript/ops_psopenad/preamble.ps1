@@ -182,6 +182,23 @@ function Convert-AdServiceAccount($o) {
     }
 }
 
+# msDS-SupportedEncryptionTypes bits, per MS-KILE 2.2.7. The Go side sends the
+# names AD's KerberosEncryptionType enum uses; the longer Kerberos spellings are
+# accepted too so a value read back from one dialect can be written to the other.
+function ConvertTo-AdEncTypeBits($values) {
+    $v = 0
+    foreach ($k in @($values)) {
+        switch -Regex ("$k".ToUpperInvariant().Trim()) {
+            '^DES-CBC-CRC$'      { $v = $v -bor 1 }
+            '^DES-CBC-MD5$'      { $v = $v -bor 2 }
+            '^(RC4|RC4-HMAC.*)$' { $v = $v -bor 4 }
+            '^AES128'            { $v = $v -bor 8 }
+            '^AES256'            { $v = $v -bor 16 }
+        }
+    }
+    return $v
+}
+
 # $p.set carries two kinds of entry. The typed fields arrive under Microsoft
 # cmdlet parameter names and each fragment maps those per class, because the
 # mapping differs per class. Add/Remove/Replace/Clear arrive under raw LDAP
