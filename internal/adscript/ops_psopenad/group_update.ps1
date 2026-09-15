@@ -9,18 +9,20 @@
                 $gt  = [uint32](Get-AdPropValue $cur 'GroupType')
                 if ($s.ContainsKey('GroupScope')) {
                     $bit = switch ("$($s.GroupScope)".ToLowerInvariant()) {
-                        'domainlocal' { 4 }
-                        'universal'   { 8 }
-                        default       { 2 }
+                        'domainlocal' { $AD_GT_DOMAINLOCAL }
+                        'universal'   { $AD_GT_UNIVERSAL }
+                        default       { $AD_GT_GLOBAL }
                     }
-                    $gt = $gt -band (-bnot 14)
-                    $gt = $gt -bor $bit
+                    $gt = ($gt -band (-bnot $AD_GT_SCOPE_MASK)) -bor $bit
                 }
                 if ($s.ContainsKey('GroupCategory')) {
-                    if ("$($s.GroupCategory)".ToLowerInvariant() -eq 'distribution') { $gt = $gt -band (-bnot 0x80000000) }
-                    else { $gt = $gt -bor 0x80000000 }
+                    if ("$($s.GroupCategory)".ToLowerInvariant() -eq 'distribution') {
+                        $gt = $gt -band (-bnot $AD_GT_SECURITY)
+                    } else {
+                        $gt = $gt -bor $AD_GT_SECURITY
+                    }
                 }
-                $repl['groupType'] = (ConvertTo-AdGroupTypeInt32 $gt)
+                $repl['groupType'] = (ConvertTo-AdGroupTypeValue ([uint32]($gt -band [uint32]::MaxValue)))
             }
             # A scope change between global and domainlocal is illegal without
             # passing through universal. The DC enforces that and the error

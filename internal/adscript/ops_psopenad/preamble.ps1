@@ -114,11 +114,22 @@ function Convert-AdOU($o) {
     }
 }
 
-# groupType carries IsSecurity, 0x80000000, so its value does not fit a signed
-# Int32 and [int] on it throws. AD stores the attribute as a 32-bit signed
-# integer, so the write is the unchecked reinterpretation of those same bits.
-function ConvertTo-AdGroupTypeInt32([uint32]$bits) {
-    return [BitConverter]::ToInt32([BitConverter]::GetBytes($bits), 0)
+# groupType bits, per MS-ADTS 2.2.12. These are written as [uint32] constants
+# rather than hex literals on purpose: PowerShell parses a hex literal that sets
+# bit 31 as a negative Int32, so 0x80000000 is -2147483648 and every subsequent
+# conversion of it is wrong in a different way.
+$AD_GT_GLOBAL      = [uint32]2        # 0x00000002
+$AD_GT_DOMAINLOCAL = [uint32]4        # 0x00000004
+$AD_GT_UNIVERSAL   = [uint32]8        # 0x00000008
+$AD_GT_SCOPE_MASK  = [uint32]14       # the three scope bits together
+$AD_GT_SECURITY    = [uint32]2147483648 # 0x80000000
+
+# AD stores groupType as a 32-bit signed integer, and LDAP carries it as a
+# decimal string. The value is handed over as that string: it is unambiguous,
+# and it sidesteps both PowerShell's numeric promotion and whatever conversion
+# the module applies to an -OtherAttributes value.
+function ConvertTo-AdGroupTypeValue([uint32]$bits) {
+    return [string][BitConverter]::ToInt32([BitConverter]::GetBytes($bits), 0)
 }
 
 # Scope and category are derived from the raw groupType bits, which are the same
