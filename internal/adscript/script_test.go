@@ -314,11 +314,8 @@ func TestScriptForPSOpenADReportsMissingFragment(t *testing.T) {
 // Ops still unimplemented are listed here and the list shrinks to empty.
 func TestPSOpenADDialectCoverage(t *testing.T) {
 	unimplemented := map[string]bool{
-		OpRootDSE: true, OpDCList: true, OpDeletedProbe: true,
-		OpReplicate: true, OpReplicateVerify: true,
 		OpACLRead: true, OpACLGrant: true, OpACLRevoke: true,
 		OpACLReadCLM: true, OpACLGrantCLM: true, OpACLRevokeCLM: true,
-		OpSchemaResolve: true,
 	}
 	for _, op := range Ops() {
 		_, err := ScriptFor("psopenad", op)

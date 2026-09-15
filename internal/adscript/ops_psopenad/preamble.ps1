@@ -13,6 +13,11 @@ if ($p.credential) {
     $secpw = ConvertTo-SecureString $p.credential.password -AsPlainText -Force
     $common['Credential'] = [System.Management.Automation.PSCredential]::new($p.credential.username, $secpw)
 }
+# $common's Credential is replaced by the session once one is open. An op that
+# has to reach a second DC - replication verification - opens its own session
+# and needs the credential on its own, so it is captured here.
+$credOnly = @{}
+if ($common.ContainsKey('Credential')) { $credOnly['Credential'] = $common['Credential'] }
 
 function Get-AdPropValue($obj, $name) {
     if ($null -eq $obj) { return $null }
