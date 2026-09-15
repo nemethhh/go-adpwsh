@@ -6,7 +6,7 @@
         if ($children.Count -gt 0) {
             [ordered]@{ deleted = $false; childCount = $children.Count }
         } else {
-            # GAP: $p.unprotect is not honoured yet; it is a Deny ACE.
+            if ($p.unprotect) { Set-AdProtected $p.identity $false }
             Remove-OpenADObject @common -Identity $p.identity
             [ordered]@{ deleted = $true; childCount = 0; verify = (Test-AdPresence $p.identity) }
         }

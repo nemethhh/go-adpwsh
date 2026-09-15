@@ -26,7 +26,9 @@
         if ($c.OtherAttributes) {
             foreach ($k in $c.OtherAttributes.Keys) { $attrs[$k] = $c.OtherAttributes[$k] }
         }
-        # GAP: $c.PrincipalsAllowedToDelegateToAccount is not honoured yet. It is
-        # a security descriptor, so it lands with the ACL helpers.
+        if ($c.ContainsKey('PrincipalsAllowedToDelegateToAccount')) {
+            $attrs['msDS-AllowedToActOnBehalfOfOtherIdentity'] =
+                (New-AdPrincipalSd $c.PrincipalsAllowedToDelegateToAccount)
+        }
         $new = New-OpenADObject @common -Name $c.Name -Type computer -Path $c.Path -OtherAttributes $attrs -PassThru
         Convert-AdComputer (Get-OpenADComputer @common -Identity $new.ObjectGuid -Properties $p.project)

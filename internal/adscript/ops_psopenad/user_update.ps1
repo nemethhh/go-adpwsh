@@ -25,8 +25,10 @@
                 }
                 $repl['userAccountControl'] = $uac
             }
-            # GAP: $s.CannotChangePassword is not honoured yet; it is a Deny ACE.
             Set-AdAttributes $p.identity $s $repl
+            if ($s.ContainsKey('CannotChangePassword')) {
+                Set-AdCannotChangePassword $p.identity ([bool]$s.CannotChangePassword)
+            }
         }
         if ($p.rename) { $r = $p.rename; Rename-OpenADObject @common -Identity $r.Identity -NewName $r.NewName }
         if ($p.move)   { $m = $p.move;   Move-OpenADObject   @common -Identity $m.Identity -TargetPath $m.TargetPath }

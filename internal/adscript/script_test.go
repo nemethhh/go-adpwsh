@@ -310,22 +310,10 @@ func TestScriptForPSOpenADReportsMissingFragment(t *testing.T) {
 	}
 }
 
-// The psopenad dialect must eventually cover every op the adws dialect does.
-// Ops still unimplemented are listed here and the list shrinks to empty.
+// The psopenad dialect covers every op the adws dialect does.
 func TestPSOpenADDialectCoverage(t *testing.T) {
-	unimplemented := map[string]bool{
-		OpACLRead: true, OpACLGrant: true, OpACLRevoke: true,
-		OpACLReadCLM: true, OpACLGrantCLM: true, OpACLRevokeCLM: true,
-	}
 	for _, op := range Ops() {
-		_, err := ScriptFor("psopenad", op)
-		if unimplemented[op] {
-			if err == nil {
-				t.Errorf("op %q is implemented but still listed as unimplemented", op)
-			}
-			continue
-		}
-		if err != nil {
+		if _, err := ScriptFor("psopenad", op); err != nil {
 			t.Errorf("op %q: %v", op, err)
 		}
 	}

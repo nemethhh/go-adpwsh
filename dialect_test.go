@@ -40,11 +40,9 @@ func TestPSOpenADRejectsForceSync(t *testing.T) {
 	}
 }
 
-// The polling wait must not be rejected the way ForceSync is. While the
-// psopenad fragment set is still being filled in, New legitimately fails for a
-// different reason - no rootdse fragment - so this asserts the absence of the
-// ForceSync rejection rather than overall success. It is tightened to require
-// success once every fragment exists.
+// The polling wait must not be rejected the way ForceSync is. This also proves
+// the dialect composes end to end: New runs the rootdse op, so it only succeeds
+// if the psopenad fragment set actually resolves.
 func TestPSOpenADAllowsPollingWait(t *testing.T) {
 	tr := fake.New(func(fake.Call) fake.Response { return fake.OK(rootDSE()) })
 	c, err := adpwsh.New(context.Background(), adpwsh.Config{
@@ -52,10 +50,8 @@ func TestPSOpenADAllowsPollingWait(t *testing.T) {
 		Dialect:     adpwsh.DialectPSOpenAD,
 		Replication: adpwsh.ReplicationConfig{Wait: true},
 	})
-	if err != nil && strings.Contains(err.Error(), "ForceSync") {
-		t.Fatalf("polling wait must not be rejected as ForceSync: %v", err)
+	if err != nil {
+		t.Fatalf("polling wait should be allowed: %v", err)
 	}
-	if err == nil {
-		_ = c.Close()
-	}
+	_ = c.Close()
 }

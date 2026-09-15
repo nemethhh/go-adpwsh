@@ -34,9 +34,10 @@
                 }
                 $repl['userAccountControl'] = $uac
             }
-            # GAP: $s.PrincipalsAllowedToDelegateToAccount is not honoured yet;
-            # it is a security descriptor and lands with the ACL helpers.
-            #
+            if ($s.ContainsKey('PrincipalsAllowedToDelegateToAccount')) {
+                $repl['msDS-AllowedToActOnBehalfOfOtherIdentity'] =
+                    (New-AdPrincipalSd $s.PrincipalsAllowedToDelegateToAccount)
+            }
             # msDS-AllowedToDelegateTo needs no case here: the Go side puts it in
             # the generic Replace/Clear maps, which Set-AdAttributes forwards.
             Set-AdAttributes $p.identity $s $repl

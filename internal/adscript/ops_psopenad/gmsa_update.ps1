@@ -34,9 +34,10 @@
             # msDS-ManagedPasswordInterval is write-once at creation; a change
             # attempt is refused by the DC and classifies as KindConstraint.
             # That refusal is left to the DC, matching the ADWS dialect.
-            #
-            # GAP: $s.PrincipalsAllowedToRetrieveManagedPassword is not honoured
-            # yet; it is a security descriptor and lands with the ACL helpers.
+            if ($s.ContainsKey('PrincipalsAllowedToRetrieveManagedPassword')) {
+                $repl['msDS-GroupMSAMembership'] =
+                    (New-AdPrincipalSd $s.PrincipalsAllowedToRetrieveManagedPassword)
+            }
             Set-AdAttributes $p.identity $s $repl
         }
         if ($p.rename) { $r = $p.rename; Rename-OpenADObject @common -Identity $r.Identity -NewName $r.NewName }

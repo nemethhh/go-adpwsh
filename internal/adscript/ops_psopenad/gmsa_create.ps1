@@ -20,7 +20,9 @@
         if ($c.ContainsKey('AccountExpirationDate')) {
             $attrs['accountExpires'] = (ConvertTo-AdAccountExpires $c.AccountExpirationDate)
         }
-        # GAP: $c.PrincipalsAllowedToRetrieveManagedPassword is not honoured yet.
-        # It is msDS-GroupMSAMembership, a security descriptor; ACL helpers.
+        if ($c.ContainsKey('PrincipalsAllowedToRetrieveManagedPassword')) {
+            $attrs['msDS-GroupMSAMembership'] =
+                (New-AdPrincipalSd $c.PrincipalsAllowedToRetrieveManagedPassword)
+        }
         $new = New-OpenADObject @common -Name $c.Name -Type 'msDS-GroupManagedServiceAccount' -Path $c.Path -OtherAttributes $attrs -PassThru
         Convert-AdServiceAccount (Get-OpenADServiceAccount @common -Identity $new.ObjectGuid -Properties $p.project)

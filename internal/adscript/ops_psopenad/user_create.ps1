@@ -30,7 +30,8 @@
             $pls = if ($c.ChangePasswordAtLogon) { '0' } else { '-1' }
             Set-OpenADObject @common -Identity $new.ObjectGuid -Replace @{pwdLastSet = $pls}
         }
-        # GAP: $c.CannotChangePassword is not honoured yet. It is a Deny ACE on
-        # the change-password extended right, so it lands with the ACL helpers.
+        if ($c.ContainsKey('CannotChangePassword')) {
+            Set-AdCannotChangePassword $new.ObjectGuid ([bool]$c.CannotChangePassword)
+        }
 
         Convert-AdUser (Get-OpenADUser @common -Identity $new.ObjectGuid -Properties $p.project)

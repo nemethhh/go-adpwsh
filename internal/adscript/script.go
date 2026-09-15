@@ -55,6 +55,21 @@ func load() {
 			psSet[name] = string(psPre) + string(frag) + string(psEpi)
 		}
 	}
+
+	// The CLM ACL variants exist for ConstrainedLanguage WinRM endpoints, which
+	// are a Windows concern and cannot arise on this dialect: it runs PowerShell
+	// 7.4 in FullLanguage over LDAP. They alias their non-CLM counterparts so
+	// core.exec's aclCLMVariant path can never produce a missing fragment, and
+	// so the two can never drift apart the way two copies of a file would.
+	for clm, base := range map[string]string{
+		OpACLReadCLM:   OpACLRead,
+		OpACLGrantCLM:  OpACLGrant,
+		OpACLRevokeCLM: OpACLRevoke,
+	} {
+		if frag, ok := psSet[base]; ok {
+			psSet[clm] = frag
+		}
+	}
 	composedByDialect["psopenad"] = psSet
 }
 

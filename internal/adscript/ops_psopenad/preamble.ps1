@@ -257,6 +257,184 @@ function Test-AdMember($group, $memberId) {
     return ($hit.Count -gt 0)
 }
 
+# AD rejects unmapped generic bits with 0x20A2, so full control is written as
+# the mapped mask rather than GenericAll.
+$AD_RIGHTS_FULL = 0xF01FF
+
+# ActiveDirectorySecurityInheritance maps onto ACE flags exactly as
+# System.DirectoryServices does it, so an ACE written here is indistinguishable
+# from one written by the ADWS dialect:
+#
+#   None             -> (none)
+#   All              -> ContainerInherit
+#   Descendents      -> ContainerInherit | InheritOnly
+#   SelfAndChildren  -> ContainerInherit | NoPropagateInherit
+#   Children         -> ContainerInherit | NoPropagateInherit | InheritOnly
+#
+# NoPropagateInherit is what distinguishes the two "children" forms from the two
+# "descendents" forms; ObjectInherit plays no part, because every AD object is a
+# container as far as inheritance is concerned.
+function New-AdAceFromSpec($spec) {
+    $sid    = [PSOpenAD.Security.SecurityIdentifier]::new([string]$spec.trustee)
+    $rights = [PSOpenAD.Security.ActiveDirectoryRights](@($spec.rights) -join ', ')
+    $type   = if ("$($spec.type)" -eq 'Deny') { 'AccessDenied' } else { 'AccessAllowed' }
+    $flags  = [PSOpenAD.Security.AceFlags]::None
+    switch ("$($spec.inheritance)") {
+        'All'             { $flags = [PSOpenAD.Security.AceFlags]'ContainerInherit' }
+        'Descendents'     { $flags = [PSOpenAD.Security.AceFlags]'ContainerInherit, InheritOnly' }
+        'SelfAndChildren' { $flags = [PSOpenAD.Security.AceFlags]'ContainerInherit, NoPropagateInherit' }
+        'Children'        { $flags = [PSOpenAD.Security.AceFlags]'ContainerInherit, NoPropagateInherit, InheritOnly' }
+    }
+    $ot  = if ($spec.objectType)          { [Guid]$spec.objectType }          else { [Guid]::Empty }
+    $iot = if ($spec.inheritedObjectType) { [Guid]$spec.inheritedObjectType } else { [Guid]::Empty }
+    if ($ot -ne [Guid]::Empty -or $iot -ne [Guid]::Empty) {
+        $oflags = [PSOpenAD.Security.ObjectAceFlags]::None
+        if ($ot  -ne [Guid]::Empty) { $oflags = $oflags -bor [PSOpenAD.Security.ObjectAceFlags]::ObjectAceTypePresent }
+        if ($iot -ne [Guid]::Empty) { $oflags = $oflags -bor [PSOpenAD.Security.ObjectAceFlags]::InheritedObjectAceTypePresent }
+        $t = if ($type -eq 'AccessDenied') { 'AccessDeniedObject' } else { 'AccessAllowedObject' }
+        return [PSOpenAD.Security.ObjectAce]::new(
+            [PSOpenAD.Security.AceType]$t, $flags, $rights, $sid, $null, $oflags, $ot, $iot)
+    }
+    return [PSOpenAD.Security.Ace]::new([PSOpenAD.Security.AceType]$type, $flags, $rights, $sid, $null)
+}
+
+# The inverse. objectType and inheritedObjectType are emitted as the all-zero
+# GUID when absent, which is what the AD cmdlets emit and what the Go side
+# normalises back to "".
+function ConvertTo-AdAceSpec($a) {
+    $CONTAINER_INHERIT = 0x02
+    $NO_PROPAGATE      = 0x04
+    $INHERIT_ONLY      = 0x08
+    $INHERITED         = 0x10
+
+    $f = [int]$a.AceFlags
+    $inh = 'None'
+    if (($f -band $CONTAINER_INHERIT) -ne 0) {
+        if (($f -band $NO_PROPAGATE) -ne 0) {
+            $inh = if (($f -band $INHERIT_ONLY) -ne 0) { 'Children' } else { 'SelfAndChildren' }
+        } else {
+            $inh = if (($f -band $INHERIT_ONLY) -ne 0) { 'Descendents' } else { 'All' }
+        }
+    }
+
+    # ObjectAceType is only meaningful when its presence flag is set.
+    $ot     = [Guid]::Empty
+    $iot    = [Guid]::Empty
+    $oflags = Get-AdPropValue $a 'ObjectAceFlags'
+    if ($null -ne $oflags) {
+        if (([int]$oflags -band 1) -ne 0) { $ot  = [Guid](Get-AdPropValue $a 'ObjectAceType') }
+        if (([int]$oflags -band 2) -ne 0) { $iot = [Guid](Get-AdPropValue $a 'InheritedObjectAceType') }
+    }
+
+    return [ordered]@{
+        trustee             = "$($a.Sid)"
+        type                = $(if ("$($a.AceType)" -like 'AccessDenied*') { 'Deny' } else { 'Allow' })
+        rights              = @("$($a.AccessMask)" -split ',\s*' | Where-Object { $_ })
+        objectType          = $ot.ToString()
+        inheritedObjectType = $iot.ToString()
+        inheritance         = $inh
+        inherited           = (($f -band $INHERITED) -ne 0)
+    }
+}
+
+function Get-AdDacl($identity) {
+    $o = Get-OpenADObject @common -Identity $identity -Properties nTSecurityDescriptor
+    return @{ dn = $o.DistinguishedName; guid = $o.ObjectGuid.ToString(); sd = $o.NTSecurityDescriptor }
+}
+
+# -SecurityMask Dacl states which components of the descriptor the write applies
+# to. A structurally DACL-only descriptor is accepted without it, but stating the
+# intent is what lets a non-admin caller write one.
+#
+# The descriptor is passed as an object. Never pass a byte[] through -Replace: a
+# PSObject-wrapped array was silently stringified before the fork's fix, and the
+# object is the correct API regardless.
+function Set-AdDacl($identity, $sd) {
+    Set-OpenADObject @common -Identity $identity -Replace @{nTSecurityDescriptor = $sd} -SecurityMask Dacl
+}
+
+# ProtectedFromAccidentalDeletion is an explicit Deny of Delete and DeleteTree
+# for Everyone (S-1-1-0). 0x10000 is the Delete right.
+function Set-AdProtected($identity, [bool]$on) {
+    $cur = Get-AdDacl $identity
+    $sd  = $cur.sd
+    $existing = @($sd.DiscretionaryAcl | Where-Object {
+        "$($_.AceType)" -like 'AccessDenied*' -and "$($_.Sid)" -eq 'S-1-1-0' -and
+        (([int]$_.AccessMask) -band 0x10000) -ne 0 })
+    if ($on -and $existing.Count -eq 0) {
+        $ace = [PSOpenAD.Security.Ace]::new(
+            [PSOpenAD.Security.AceType]::AccessDenied, [PSOpenAD.Security.AceFlags]::None,
+            ([PSOpenAD.Security.ActiveDirectoryRights]'Delete, DeleteTree'),
+            [PSOpenAD.Security.SecurityIdentifier]::new('S-1-1-0'), $null)
+        $sd.DiscretionaryAcl.Insert(0, $ace)
+        Set-AdDacl $identity $sd
+    } elseif (-not $on -and $existing.Count -gt 0) {
+        foreach ($e in $existing) { $null = $sd.DiscretionaryAcl.Remove($e) }
+        Set-AdDacl $identity $sd
+    }
+}
+
+# CannotChangePassword is a Deny of the change-password extended right for both
+# Everyone and Principal Self - the same pair Set-ADUser writes, and the same
+# pair Convert-AdUser reads back as canChangePassword.
+function Set-AdCannotChangePassword($identity, [bool]$on) {
+    $trustees = @('S-1-1-0', 'S-1-5-10')
+    $cur = Get-AdDacl $identity
+    $sd  = $cur.sd
+    $isChangePwdAce = {
+        param($ace, $wantDeny)
+        $ot = Get-AdPropValue $ace 'ObjectAceType'
+        if ($null -eq $ot -or [Guid]$ot -ne $CHANGE_PASSWORD_RIGHT) { return $false }
+        if ("$($ace.Sid)" -notin $trustees) { return $false }
+        $isDeny = "$($ace.AceType)" -like 'AccessDenied*'
+        return ($isDeny -eq $wantDeny)
+    }
+    $changed = $false
+    if ($on) {
+        foreach ($t in $trustees) {
+            $have = @($sd.DiscretionaryAcl | Where-Object {
+                (& $isChangePwdAce $_ $true) -and "$($_.Sid)" -eq $t })
+            if ($have.Count -gt 0) { continue }
+            $sd.DiscretionaryAcl.Insert(0, [PSOpenAD.Security.ObjectAce]::new(
+                [PSOpenAD.Security.AceType]::AccessDeniedObject,
+                [PSOpenAD.Security.AceFlags]::None,
+                [PSOpenAD.Security.ActiveDirectoryRights]::ExtendedRight,
+                [PSOpenAD.Security.SecurityIdentifier]::new($t), $null,
+                [PSOpenAD.Security.ObjectAceFlags]::ObjectAceTypePresent,
+                $CHANGE_PASSWORD_RIGHT, [Guid]::Empty))
+            $changed = $true
+        }
+    } else {
+        foreach ($e in @($sd.DiscretionaryAcl | Where-Object { & $isChangePwdAce $_ $true })) {
+            $null = $sd.DiscretionaryAcl.Remove($e)
+            $changed = $true
+        }
+    }
+    if ($changed) { Set-AdDacl $identity $sd }
+}
+
+# Builds the descriptor AD stores in msDS-AllowedToActOnBehalfOfOtherIdentity
+# and msDS-GroupMSAMembership: owner and group Domain Admins, one allow ACE per
+# principal. Rights must be the mapped full-control mask; AD rejects generic bits.
+function New-AdPrincipalSd([string[]]$principalIds) {
+    $dnc       = (Get-OpenADRootDSE @common).DefaultNamingContext
+    $domainSid = (Get-OpenADObject @common -Identity $dnc -Properties objectSid).ObjectSid.Value
+    $admins    = [PSOpenAD.Security.SecurityIdentifier]::new("$domainSid-512")
+    $sd = [PSOpenAD.Security.CommonSecurityDescriptor]::new()
+    $sd.Flags = [PSOpenAD.Security.ControlFlags]'DiscretionaryAclPresent, SelfRelative'
+    $sd.Owner = $admins
+    $sd.Group = $admins
+    $dacl = [PSOpenAD.Security.DiscretionaryAcl]::new([PSOpenAD.Security.AclRevision]::Revision)
+    foreach ($g in @($principalIds)) {
+        $o = Get-OpenADObject @common -Identity $g -Properties objectSid
+        $dacl.Add([PSOpenAD.Security.Ace]::new(
+            [PSOpenAD.Security.AceType]::AccessAllowed, [PSOpenAD.Security.AceFlags]::None,
+            ([PSOpenAD.Security.ActiveDirectoryRights]$AD_RIGHTS_FULL), $o.ObjectSid, $null))
+    }
+    $sd.DiscretionaryAcl = $dacl
+    return $sd
+}
+
 try {
     $sessionParams = @{}
     if ($p.server) { $sessionParams['ComputerName'] = $p.server }
