@@ -264,12 +264,30 @@ func TestAccLargeGroupMembership(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("User.Create %d: %v", r.idx, r.err)
 		}
-		guid := r.guid
-		t.Cleanup(func() {
-			_ = c.User.Delete(context.Background(), adpwsh.ByGUID(guid))
-		})
-		members = append(members, adpwsh.ByGUID(guid))
+		members = append(members, adpwsh.ByGUID(r.guid))
 	}
+	// Cleanup runs its functions one after another, so registering one delete
+	// per member would take as long again as the creates did - at a few
+	// thousand members, hours. They are torn down through the same pool.
+	t.Cleanup(func() {
+		ctx := context.Background()
+		del := make(chan adpwsh.Identity)
+		var dwg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			dwg.Add(1)
+			go func() {
+				defer dwg.Done()
+				for id := range del {
+					_ = c.User.Delete(ctx, id)
+				}
+			}()
+		}
+		for _, m := range members {
+			del <- m
+		}
+		close(del)
+		dwg.Wait()
+	})
 	if len(members) != count {
 		t.Fatalf("created %d members, want %d", len(members), count)
 	}
