@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,7 +63,15 @@ func accClient(t *testing.T) *adpwsh.Client {
 	if pwsh == "" {
 		pwsh = "pwsh"
 	}
-	tr, err := local.New(local.Config{PwshPath: pwsh})
+	// Each operation is its own pwsh process and the default bound is 4, which
+	// makes a few-thousand-object suite take hours. The lab DC handles more.
+	conc := 16
+	if v := os.Getenv("AD_ACC_CONCURRENCY"); v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &conc); err != nil {
+			t.Fatalf("AD_ACC_CONCURRENCY=%q: %v", v, err)
+		}
+	}
+	tr, err := local.New(local.Config{PwshPath: pwsh, Concurrency: conc})
 	if err != nil {
 		t.Fatalf("local.New: %v", err)
 	}
@@ -81,6 +90,13 @@ func accClient(t *testing.T) *adpwsh.Client {
 // accName gives each object a unique, sweepable name.
 func accName(prefix string) string {
 	return fmt.Sprintf("tfacc-%s-%d", prefix, time.Now().UnixNano()%1e9)
+}
+
+// accShortName is accName for classes whose sAMAccountName AD caps at 15
+// characters - computers and gMSAs. A longer one is refused with
+// 00000523 ERROR_INVALID_ACCOUNTNAME.
+func accShortName(prefix string) string {
+	return fmt.Sprintf("tfa%s%d", prefix, time.Now().UnixNano()%1e6)
 }
 
 func accContainer(t *testing.T) string { return accEnv(t, "AD_ACC_CONTAINER") }
@@ -174,6 +190,11 @@ func TestAccUserLifecycle(t *testing.T) {
 
 // The ranged-retrieval proof. The failure mode is silent under-reporting rather
 // than an error, which makes this the single most important assertion here.
+// AD truncates a multivalued attribute at MaxValRange, 1500 by default, so the
+// count has to exceed that for the test to mean anything.
+//
+// Each operation is its own pwsh process, so the members are created through a
+// bounded worker pool; sequentially this would take hours rather than minutes.
 func TestAccLargeGroupMembership(t *testing.T) {
 	ctx := context.Background()
 	c := accClient(t)
@@ -183,8 +204,16 @@ func TestAccLargeGroupMembership(t *testing.T) {
 			t.Fatalf("AD_ACC_LARGE_COUNT=%q: %v", v, err)
 		}
 	}
+	if count <= 1500 {
+		t.Logf("warning: %d is at or below AD's default MaxValRange of 1500, "+
+			"so this run does not exercise ranged retrieval", count)
+	}
 
-	gname := accName("lgrp")
+	// A user's sAMAccountName is capped at 20 characters, so the members get a
+	// short prefix; a longer one is refused with 00000523
+	// ERROR_INVALID_ACCOUNTNAME.
+	gname := accShortName("lg")
+	mprefix := gname
 	g, err := c.Group.Create(ctx, adpwsh.GroupSpec{
 		Name: gname, SamAccountName: gname, Container: accContainer(t),
 		Scope: adpwsh.GroupScopeGlobal, Category: adpwsh.GroupCategorySecurity,
@@ -196,21 +225,55 @@ func TestAccLargeGroupMembership(t *testing.T) {
 		_ = c.Group.Delete(context.Background(), adpwsh.ByGUID(g.GUID))
 	})
 
-	members := make([]adpwsh.Identity, 0, count)
-	for i := 0; i < count; i++ {
-		uname := fmt.Sprintf("%s-m%04d", gname, i)
-		u, err := c.User.Create(ctx, adpwsh.UserSpec{
-			SamAccountName: uname, Container: accContainer(t),
-		})
-		if err != nil {
-			t.Fatalf("User.Create %d: %v", i, err)
+	type made struct {
+		idx  int
+		guid string
+		err  error
+	}
+	const workers = 16
+	jobs := make(chan int)
+	results := make(chan made, count)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				uname := fmt.Sprintf("%sm%04d", mprefix, i)
+				u, err := c.User.Create(ctx, adpwsh.UserSpec{
+					SamAccountName: uname, Container: accContainer(t),
+				})
+				if err != nil {
+					results <- made{idx: i, err: err}
+					continue
+				}
+				results <- made{idx: i, guid: u.GUID}
+			}
+		}()
+	}
+	go func() {
+		for i := 0; i < count; i++ {
+			jobs <- i
 		}
-		guid := u.GUID
+		close(jobs)
+	}()
+	go func() { wg.Wait(); close(results) }()
+
+	members := make([]adpwsh.Identity, 0, count)
+	for r := range results {
+		if r.err != nil {
+			t.Fatalf("User.Create %d: %v", r.idx, r.err)
+		}
+		guid := r.guid
 		t.Cleanup(func() {
 			_ = c.User.Delete(context.Background(), adpwsh.ByGUID(guid))
 		})
-		members = append(members, adpwsh.ByGUID(u.GUID))
+		members = append(members, adpwsh.ByGUID(guid))
 	}
+	if len(members) != count {
+		t.Fatalf("created %d members, want %d", len(members), count)
+	}
+
 	if err := c.Group.AddMembers(ctx, adpwsh.ByGUID(g.GUID), members); err != nil {
 		t.Fatalf("AddMembers: %v", err)
 	}
@@ -221,6 +284,11 @@ func TestAccLargeGroupMembership(t *testing.T) {
 	}
 	if len(got) != count {
 		t.Fatalf("Members returned %d of %d: ranged retrieval is under-reporting", len(got), count)
+	}
+	for _, m := range got {
+		if m.GUID == "" || m.SID == "" {
+			t.Fatalf("member decoded with an empty GUID or SID: %+v", m)
+		}
 	}
 }
 

@@ -6,7 +6,10 @@
                 objectGUID        = $m.ObjectGuid.ToString()
                 distinguishedName = $m.DistinguishedName
                 objectClass       = @($m.ObjectClass)[-1]
-                sid               = $(if ($m.SID) { $m.SID.Value } else { $null })
+                sid               = $(
+                    $__sid = Get-AdPropValue $m 'SID'
+                    if (-not $__sid) { $__sid = Get-AdPropValue $m 'ObjectSid' }
+                    if ($__sid) { $__sid.Value } else { $null })
             }
         }
         [ordered]@{ members = @($members) }

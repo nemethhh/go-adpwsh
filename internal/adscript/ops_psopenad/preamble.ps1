@@ -40,7 +40,7 @@ $AD_PROPS_COMPUTER = @('description', 'displayName', 'location', 'managedBy',
                        'msDS-SupportedEncryptionTypes', 'accountExpires',
                        'operatingSystem', 'operatingSystemVersion',
                        'operatingSystemServicePack')
-$AD_PROPS_GMSA  = @('description', 'displayName', 'servicePrincipalName',
+$AD_PROPS_GMSA  = @('dNSHostName', 'description', 'displayName', 'servicePrincipalName',
                     'msDS-GroupMSAMembership', 'msDS-SupportedEncryptionTypes',
                     'msDS-ManagedPasswordInterval', 'accountExpires')
 
@@ -183,9 +183,41 @@ function Convert-AdUser($o) {
     }
 }
 
+# PSOpenAD decodes msDS-SupportedEncryptionTypes into its own enum, whose names
+# are the full Kerberos spellings (Rc4Hmac, Aes256CtsHmacSha196). The ADWS
+# dialect emits the ActiveDirectory module's short names, and that is the frozen
+# contract, so the names are mapped back. ConvertTo-AdEncTypeBits accepts either
+# spelling on the way in, so a value read from one dialect can be written to the
+# other.
 function Convert-KerberosEncType($k) {
     $out = @()
-    foreach ($part in ("$k" -split ',\s*')) { if ($part) { $out += $part.Trim() } }
+    foreach ($part in ("$k" -split ',\s*')) {
+        $t = $part.Trim()
+        if (-not $t) { continue }
+        switch -Regex ($t) {
+            '^(Rc4Hmac|RC4.*)$'   { $out += 'RC4'; break }
+            '^Aes128'             { $out += 'AES128'; break }
+            '^Aes256'             { $out += 'AES256'; break }
+            '^DesCbcCrc$'         { $out += 'DES-CBC-CRC'; break }
+            '^DesCbcMd5$'         { $out += 'DES-CBC-MD5'; break }
+            default               { $out += $t }
+        }
+    }
+    return $out
+}
+
+# An attribute with no values must emit an empty list, not a one-element list
+# holding a null: @($null) has length one, and the Go DTO renders that as [""].
+# Every call site wraps the result in @(), so this returns the elements and lets
+# that wrapping rebuild the array - returning ,$out here would nest one inside
+# another.
+function ConvertTo-AdArray($v) {
+    $out = @()
+    foreach ($item in @($v)) {
+        if ($null -eq $item) { continue }
+        if ("$item" -eq '') { continue }
+        $out += $item
+    }
     return $out
 }
 
@@ -214,8 +246,8 @@ function Convert-AdComputer($c) {
         Location               = (Get-AdPropValue $c 'Location')
         ManagedBy              = (Get-AdPropValue $c 'ManagedBy')
         TrustedForDelegation   = (($uac -band 0x80000) -ne 0)
-        ServicePrincipalNames  = @(Get-AdPropValue $c 'ServicePrincipalName')
-        AllowedToDelegateTo    = @(Get-AdPropValue $c 'MsDS-AllowedToDelegateTo')
+        ServicePrincipalNames  = @(ConvertTo-AdArray (Get-AdPropValue $c 'ServicePrincipalName'))
+        AllowedToDelegateTo    = @(ConvertTo-AdArray (Get-AdPropValue $c 'MsDS-AllowedToDelegateTo'))
         PrincipalsAllowed      = @($princ)
         KerberosEncryptionType = @($ket)
         AccountExpirationDate  = (ConvertTo-AdIsoTime (Get-AdPropValue $c 'AccountExpires'))
@@ -249,7 +281,7 @@ function Convert-AdServiceAccount($o) {
         enabled                       = [bool]$o.Enabled
         trustedForDelegation          = (($uac -band 0x80000) -ne 0)
         principalsAllowed             = @($principals)
-        servicePrincipalNames         = @(Get-AdPropValue $o 'ServicePrincipalName')
+        servicePrincipalNames         = @(ConvertTo-AdArray (Get-AdPropValue $o 'ServicePrincipalName'))
         kerberosEncryptionType        = @($kerb)
         managedPasswordIntervalInDays = [int](@(Get-AdPropValue $o 'MsDS-ManagedPasswordInterval')[0])
         accountExpirationDate         = (ConvertTo-AdIsoTime (Get-AdPropValue $o 'AccountExpires'))

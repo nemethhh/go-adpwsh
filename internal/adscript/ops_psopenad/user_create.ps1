@@ -18,8 +18,12 @@
             $pw = [System.Text.Encoding]::Unicode.GetBytes('"' + $p.password + '"')
             Set-OpenADObject @common -Identity $new.ObjectGuid -Replace @{unicodePwd = $pw}
         }
+        # Disabled unless the caller explicitly asks otherwise, which is
+        # New-ADUser's own default. Enabling an account that has no password is
+        # refused by AD with 0000052D WILL_NOT_PERFORM, so defaulting to enabled
+        # would make every passwordless create fail.
         $uac = 0x200
-        if ($c.ContainsKey('Enabled') -and -not $c.Enabled) { $uac = $uac -bor 0x2 }
+        if (-not ($c.ContainsKey('Enabled') -and $c.Enabled)) { $uac = $uac -bor 0x2 }
         if ($c.ContainsKey('PasswordNeverExpires') -and $c.PasswordNeverExpires) { $uac = $uac -bor 0x10000 }
         Set-OpenADObject @common -Identity $new.ObjectGuid -Replace @{userAccountControl = $uac}
 

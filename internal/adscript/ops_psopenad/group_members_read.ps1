@@ -9,8 +9,13 @@
                 # objectClass is multivalued in LDAP and the AD cmdlets return
                 # the most specific value, which is the last element.
                 objectClass       = @($mo.ObjectClass)[-1]
-                # A contact has no objectSid, so this tolerates null.
-                sid               = $(if ($mo.SID) { $mo.SID.Value } else { $null })
+                # Get-OpenADObject returns an OpenADObject, which has no SID
+                # property - that is OpenADPrincipal's - so the attribute is read
+                # under the name it surfaces as. A contact has no objectSid at
+                # all, so null is tolerated.
+                sid               = $(
+                    $__sid = Get-AdPropValue $mo 'ObjectSid'
+                    if ($__sid) { $__sid.Value } else { $null })
             }
         }
         [ordered]@{ members = @($members) }
