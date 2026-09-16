@@ -391,3 +391,33 @@ func TestPSOpenADFragmentsMaskTheirDescriptorReads(t *testing.T) {
 		}
 	}
 }
+
+// PSOpenAD decodes AD's interval attributes - accountExpires, pwdLastSet - to
+// DateTimeOffset, so the FILETIME sentinels do not survive as integers: 0
+// arrives as 1601-01-01 and 0x7FFFFFFFFFFFFFFF as MaxValue. Comparing one to a
+// number therefore silently never matches, which is how changePasswordAtLogon
+// came to read back false for every user however the account was actually
+// flagged.
+//
+// Both attributes must be read through a helper that knows the decoding.
+func TestPSOpenADReadsIntervalAttributesThroughAHelper(t *testing.T) {
+	pre, err := files.ReadFile("ops_psopenad/preamble.ps1")
+	if err != nil {
+		t.Fatalf("read psopenad preamble: %v", err)
+	}
+	helpers := map[string]string{
+		"PwdLastSet":     "Test-AdMustChangePassword",
+		"AccountExpires": "ConvertTo-AdIsoTime",
+	}
+	for _, line := range strings.Split(string(pre), "\n") {
+		for attr, helper := range helpers {
+			if !strings.Contains(line, "Get-AdPropValue") || !strings.Contains(line, "'"+attr+"'") {
+				continue
+			}
+			if !strings.Contains(line, helper) {
+				t.Errorf("%s is read without %s, so its FILETIME sentinel is compared "+
+					"against a DateTimeOffset:\n\t%s", attr, helper, strings.TrimSpace(line))
+			}
+		}
+	}
+}

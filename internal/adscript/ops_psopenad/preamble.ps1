@@ -67,6 +67,20 @@ function ConvertTo-AdIsoTime($v) {
     return ([DateTimeOffset]::FromFileTimeUtc($i)).UtcDateTime.ToString('o')
 }
 
+# pwdLastSet is an interval attribute too, so PSOpenAD decodes it the same way:
+# the FILETIME 0 that means "must change at next logon" arrives as a
+# DateTimeOffset of 1601-01-01, never as the integer 0. Comparing it to 0
+# therefore never matched, and changePasswordAtLogon read back false whatever
+# the directory held - the account was flagged, the DTO said it was not.
+#
+# The integer branch stays because the attribute is a FILETIME by definition and
+# a future module version handing back the raw value must keep working.
+function Test-AdMustChangePassword($v) {
+    if ($null -eq $v) { return $true }
+    if ($v -is [DateTimeOffset]) { return ($v.UtcDateTime.Year -le 1601) }
+    return ([int64]$v -eq 0)
+}
+
 # Description arrives as an array on some classes and a scalar on others. The Go
 # DTO expects a scalar, so flatten before it reaches the envelope.
 function ConvertTo-AdScalar($v) {
@@ -179,7 +193,7 @@ function Convert-AdUser($o) {
         description           = (ConvertTo-AdScalar (Get-AdPropValue $o 'Description'))
         enabled               = [bool]$o.Enabled
         sid                   = $o.SID.Value
-        changePasswordAtLogon = ((Get-AdPropValue $o 'PwdLastSet') -eq 0)
+        changePasswordAtLogon = (Test-AdMustChangePassword (Get-AdPropValue $o 'PwdLastSet'))
         canChangePassword     = (-not (Test-AdDenyAce $sd $CHANGE_PASSWORD_RIGHT @('S-1-1-0','S-1-5-10')))
         passwordExpires       = (($uac -band 0x10000) -eq 0)
         accountExpirationDate = (ConvertTo-AdIsoTime (Get-AdPropValue $o 'AccountExpires'))
