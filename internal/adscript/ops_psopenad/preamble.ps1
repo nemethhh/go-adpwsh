@@ -30,6 +30,9 @@ if ($common.ContainsKey('Credential')) { $credOnly['Credential'] = $common['Cred
 # Properties the OpenAD* classes already carry - SamAccountName, SID, Enabled,
 # UserPrincipalName, GivenName, Surname, GroupScope, GroupCategory,
 # userAccountControl - are fetched by the cmdlet regardless and are not listed.
+# Every list below that names nTSecurityDescriptor obliges its call sites to
+# pass -SecurityMask Dacl; see Get-AdDacl for why an unmasked read returns null
+# rather than failing.
 $AD_PROPS_OU    = @('description', 'nTSecurityDescriptor')
 $AD_PROPS_GROUP = @('description', 'managedBy')
 $AD_PROPS_USER  = @('description', 'displayName', 'pwdLastSet', 'accountExpires',
@@ -442,8 +445,15 @@ function ConvertTo-AdAceSpec($a) {
     }
 }
 
+# -SecurityMask Dacl on the READ is not symmetry with Set-AdDacl below, it is a
+# correctness requirement of its own. A read that names no mask asks for all
+# four parts of the descriptor, the SACL included; a caller without
+# SeSecurityPrivilege is not refused it -- AD returns the attribute EMPTY and
+# PSOpenAD surfaces $null. That is invisible on a Domain Admin and breaks on
+# every least-privileged service account: .Insert() on the null DACL throws, and
+# the converters read every Deny ACE as absent.
 function Get-AdDacl($identity) {
-    $o = Get-OpenADObject @common -Identity $identity -Properties nTSecurityDescriptor
+    $o = Get-OpenADObject @common -Identity $identity -Properties nTSecurityDescriptor -SecurityMask Dacl
     return @{ dn = $o.DistinguishedName; guid = $o.ObjectGuid.ToString(); sd = $o.NTSecurityDescriptor }
 }
 

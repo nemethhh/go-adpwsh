@@ -318,3 +318,76 @@ func TestPSOpenADDialectCoverage(t *testing.T) {
 		}
 	}
 }
+
+// A read of nTSecurityDescriptor that does not say WHICH parts of the
+// descriptor it wants asks for all four, the SACL included. A caller without
+// SeSecurityPrivilege is not refused that read -- Active Directory returns the
+// attribute EMPTY, and PSOpenAD surfaces it as $null.
+//
+// That is why every read here must pass -SecurityMask, and why its absence is
+// so dangerous: it does not fail on the developer's Domain Admin account, only
+// on the least-privileged service account a real deployment uses. It then
+// fails two ways at once -- Set-AdProtected calls .Insert() on the null DACL
+// and throws InvokeMethodOnNull, while Convert-AdOU/Convert-AdUser quietly read
+// every Deny ACE as absent, so `protected` and `canChangePassword` come back
+// false no matter what the directory actually holds.
+//
+// Set-AdDacl already masks on the WRITE for a related reason (a descriptor
+// carrying a SACL is refused with CONSTRAINT_ATT_TYPE). The read needs it too.
+func TestPSOpenADReadsTheSecurityDescriptorWithAMask(t *testing.T) {
+	pre, err := files.ReadFile("ops_psopenad/preamble.ps1")
+	if err != nil {
+		t.Fatalf("read psopenad preamble: %v", err)
+	}
+	for _, line := range strings.Split(string(pre), "\n") {
+		if !strings.Contains(line, "Get-OpenADObject") {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(line), "ntsecuritydescriptor") {
+			continue
+		}
+		if !strings.Contains(line, "-SecurityMask") {
+			t.Errorf("Get-OpenADObject reads nTSecurityDescriptor without -SecurityMask:\n\t%s",
+				strings.TrimSpace(line))
+		}
+	}
+	// The property lists are handed to Get-OpenADObject by the op fragments, so
+	// a mask on the call site is only half the story: a list naming the
+	// descriptor commits every one of those call sites to masking.
+	for _, decl := range []string{"$AD_PROPS_OU", "$AD_PROPS_USER"} {
+		i := strings.Index(string(pre), decl)
+		if i < 0 {
+			t.Errorf("%s is gone; this guard no longer covers what it claims", decl)
+		}
+	}
+}
+
+// The op fragments are where those property lists are actually spent. Any
+// fragment that asks for a descriptor must mask the request.
+func TestPSOpenADFragmentsMaskTheirDescriptorReads(t *testing.T) {
+	entries, err := files.ReadDir("ops_psopenad")
+	if err != nil {
+		t.Fatalf("read psopenad ops: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() == "preamble.ps1" || !strings.HasSuffix(e.Name(), ".ps1") {
+			continue
+		}
+		b, err := files.ReadFile("ops_psopenad/" + e.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if !strings.Contains(line, "Get-OpenADObject") && !strings.Contains(line, "Get-OpenADUser") {
+				continue
+			}
+			l := strings.ToLower(line)
+			asksForSD := strings.Contains(l, "ntsecuritydescriptor") ||
+				strings.Contains(line, "$AD_PROPS_OU") || strings.Contains(line, "$AD_PROPS_USER")
+			if asksForSD && !strings.Contains(line, "-SecurityMask") {
+				t.Errorf("%s reads a security descriptor without -SecurityMask:\n\t%s",
+					e.Name(), strings.TrimSpace(line))
+			}
+		}
+	}
+}

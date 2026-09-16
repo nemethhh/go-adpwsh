@@ -38,4 +38,4 @@
             Set-AdCannotChangePassword $new.ObjectGuid ([bool]$c.CannotChangePassword)
         }
 
-        Convert-AdUser (Get-OpenADUser @common -Identity $new.ObjectGuid -Properties $AD_PROPS_USER)
+        Convert-AdUser (Get-OpenADUser @common -Identity $new.ObjectGuid -Properties $AD_PROPS_USER -SecurityMask Dacl)
