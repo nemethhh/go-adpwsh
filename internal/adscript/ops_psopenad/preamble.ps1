@@ -54,6 +54,17 @@ function Get-AdPropValue($obj, $name) {
     return $null
 }
 
+# PSOpenAD spells the SPN property differently per class: Get-OpenADComputer
+# surfaces ServicePrincipalName, Get-OpenADServiceAccount surfaces
+# ServicePrincipalNames. Reading only one of them returns $null for the other
+# class and emits an empty set - which Terraform reports as an inconsistent
+# result after apply, saying nothing about SPNs at all.
+function Get-AdSpnValue($o) {
+    $v = Get-AdPropValue $o 'ServicePrincipalName'
+    if ($null -eq $v) { $v = Get-AdPropValue $o 'ServicePrincipalNames' }
+    return $v
+}
+
 # PSOpenAD decodes interval attributes to DateTimeOffset. FILETIME 0 decodes to
 # 1601-01-01 and 0x7FFFFFFFFFFFFFFF to MaxValue; both mean "never".
 function ConvertTo-AdIsoTime($v) {
@@ -263,7 +274,7 @@ function Convert-AdComputer($c) {
         Location               = (Get-AdPropValue $c 'Location')
         ManagedBy              = (Get-AdPropValue $c 'ManagedBy')
         TrustedForDelegation   = (($uac -band 0x80000) -ne 0)
-        ServicePrincipalNames  = @(ConvertTo-AdArray (Get-AdPropValue $c 'ServicePrincipalName'))
+        ServicePrincipalNames  = @(ConvertTo-AdArray (Get-AdSpnValue $c))
         AllowedToDelegateTo    = @(ConvertTo-AdArray (Get-AdPropValue $c 'MsDS-AllowedToDelegateTo'))
         PrincipalsAllowed      = @($princ)
         KerberosEncryptionType = @($ket)
@@ -298,7 +309,7 @@ function Convert-AdServiceAccount($o) {
         enabled                       = [bool]$o.Enabled
         trustedForDelegation          = (($uac -band 0x80000) -ne 0)
         principalsAllowed             = @($principals)
-        servicePrincipalNames         = @(ConvertTo-AdArray (Get-AdPropValue $o 'ServicePrincipalName'))
+        servicePrincipalNames         = @(ConvertTo-AdArray (Get-AdSpnValue $o))
         kerberosEncryptionType        = @($kerb)
         managedPasswordIntervalInDays = [int](@(Get-AdPropValue $o 'MsDS-ManagedPasswordInterval')[0])
         accountExpirationDate         = (ConvertTo-AdIsoTime (Get-AdPropValue $o 'AccountExpires'))

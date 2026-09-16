@@ -469,3 +469,47 @@ func TestPSOpenADDoesNotIterateAWrappedNullableProperty(t *testing.T) {
 			"ConvertTo-AdArray, which is what drops the null an empty group produces")
 	}
 }
+
+// msDS-ManagedPasswordInterval is the gMSA class's only systemMustContain
+// attribute (confirmed against a live schema), so an LDAP add that omits it
+// produces an incomplete object and AD refuses it with 0x207C
+// OBJ_CLASS_VIOLATION. New-ADServiceAccount supplies the default; raw LDAP does
+// not, so the fragment must write it unconditionally rather than only when the
+// caller states it.
+func TestPSOpenADAlwaysWritesTheGMSAPasswordInterval(t *testing.T) {
+	b, err := files.ReadFile("ops_psopenad/gmsa_create.ps1")
+	if err != nil {
+		t.Fatalf("read gmsa_create: %v", err)
+	}
+	src := string(b)
+	if !strings.Contains(src, "msDS-ManagedPasswordInterval") {
+		t.Fatal("gmsa_create no longer writes msDS-ManagedPasswordInterval at all")
+	}
+	// The buggy form guarded the write behind the caller having stated it.
+	if strings.Contains(src, "if ($c.ContainsKey('ManagedPasswordIntervalInDays')) {\n            $attrs['msDS-ManagedPasswordInterval']") {
+		t.Error("gmsa_create writes msDS-ManagedPasswordInterval only when the caller states " +
+			"it, so a gMSA created without one is refused with 0x207C OBJ_CLASS_VIOLATION")
+	}
+}
+
+// PSOpenAD spells the SPN property differently per class: Get-OpenADComputer
+// surfaces ServicePrincipalName, Get-OpenADServiceAccount surfaces
+// ServicePrincipalNames. Convert-AdServiceAccount read the singular name, got
+// null, and emitted an empty set - so a gMSA's SPNs never round-tripped, and
+// Terraform failed the apply as an inconsistent result rather than reporting
+// anything about SPNs.
+func TestPSOpenADReadsSPNsUnderEitherSpelling(t *testing.T) {
+	pre, err := files.ReadFile("ops_psopenad/preamble.ps1")
+	if err != nil {
+		t.Fatalf("read psopenad preamble: %v", err)
+	}
+	for _, line := range strings.Split(string(pre), "\n") {
+		if !strings.Contains(line, "servicePrincipalNames") {
+			continue // not an emitted SPN field
+		}
+		if !strings.Contains(line, "Get-AdSpnValue") {
+			t.Errorf("an SPN field is read without Get-AdSpnValue, so it sees only one of the "+
+				"two spellings PSOpenAD uses:\n\t%s", strings.TrimSpace(line))
+		}
+	}
+}
