@@ -122,6 +122,23 @@ function Convert-KerberosEncType($k) {
     return $out
 }
 
+# ConvertTo-AdArray renders a multivalued property as a list, tolerating the
+# null AD hands back for an unset one. The tolerance is load-bearing rather than
+# defensive: the module is inconsistent about which form it returns, and
+# Get-ADServiceAccount gives $null for an unset ServicePrincipalNames where
+# Get-ADComputer gives an empty collection for the same attribute. @($null) has
+# length one, so a bare @(...) turned a gMSA with no SPNs into one empty SPN --
+# a value the provider then had to carry as a real, if meaningless, entry.
+function ConvertTo-AdArray($v) {
+    $out = @()
+    foreach ($item in @($v)) {
+        if ($null -eq $item) { continue }
+        if ("$item" -eq '') { continue }
+        $out += $item
+    }
+    return $out
+}
+
 function Convert-AdServiceAccount($o) {
     $principals = @()
     foreach ($dn in @($o.PrincipalsAllowedToRetrieveManagedPassword)) {
@@ -141,7 +158,7 @@ function Convert-AdServiceAccount($o) {
         enabled                       = [bool]$o.Enabled
         trustedForDelegation          = [bool]$o.TrustedForDelegation
         principalsAllowed             = @($principals)
-        servicePrincipalNames         = @($o.ServicePrincipalNames)
+        servicePrincipalNames         = @(ConvertTo-AdArray $o.ServicePrincipalNames)
         kerberosEncryptionType        = @($kerb)
         managedPasswordIntervalInDays = [int](@($o.ManagedPasswordIntervalInDays)[0])
         accountExpirationDate         = (ConvertTo-AdIsoTime $o.AccountExpirationDate)
@@ -172,8 +189,8 @@ function Convert-AdComputer($c) {
         Location               = $c.Location
         ManagedBy              = $c.ManagedBy
         TrustedForDelegation   = [bool]$c.TrustedForDelegation
-        ServicePrincipalNames  = @($c.ServicePrincipalNames)
-        AllowedToDelegateTo    = @($c.'msDS-AllowedToDelegateTo')
+        ServicePrincipalNames  = @(ConvertTo-AdArray $c.ServicePrincipalNames)
+        AllowedToDelegateTo    = @(ConvertTo-AdArray $c.'msDS-AllowedToDelegateTo')
         PrincipalsAllowed      = @($princ)
         KerberosEncryptionType = @($ket)
         AccountExpirationDate  = (ConvertTo-AdIsoTime $c.AccountExpirationDate)

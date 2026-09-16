@@ -213,29 +213,7 @@ func TestAccDialectsAgree(t *testing.T) {
 			t.Fatalf("ServiceAccount.Get via psopenad: %v", err)
 		}
 
-		// One field differs, and it is the ADWS dialect that is wrong: a gMSA
-		// with no servicePrincipalName reads back as one empty SPN rather than
-		// none. Convert-AdServiceAccount evaluates @($o.ServicePrincipalNames)
-		// on a null property, and @($null) has length one. Its own computer
-		// path gets this right, because the AD module hands back an empty
-		// collection there rather than a null.
-		//
-		// The PSOpenAD dialect is not made to reproduce that, and the ADWS
-		// dialect is out of scope to change here, so the difference is pinned
-		// rather than masked: everything else must match exactly, and the quirk
-		// itself is asserted. When ADWS is fixed this assertion fails, which is
-		// the signal to delete this whole exception.
-		if len(viaADWS.ServicePrincipalNames) != 1 || viaADWS.ServicePrincipalNames[0] != "" {
-			t.Errorf("the known ADWS empty-SPN quirk is gone (got %#v); remove this exception "+
-				"and compare ServicePrincipalNames directly", viaADWS.ServicePrincipalNames)
-		}
-		if len(viaPS.ServicePrincipalNames) != 0 {
-			t.Errorf("psopenad ServicePrincipalNames = %#v, want an empty list", viaPS.ServicePrincipalNames)
-		}
-		a, b := *viaADWS, *viaPS
-		a.ServicePrincipalNames = nil
-		b.ServicePrincipalNames = nil
-		requireSame(t, "GMSA (ServicePrincipalNames excepted)", a, b)
+		requireSame(t, "GMSA", viaADWS, viaPS)
 	})
 }
 
