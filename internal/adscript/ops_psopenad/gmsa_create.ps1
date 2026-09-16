@@ -3,7 +3,7 @@
         if ($c.ContainsKey('Enabled') -and -not $c.Enabled) { $uac = $uac -bor 0x2 }
         if ($c.ContainsKey('TrustedForDelegation') -and $c.TrustedForDelegation) { $uac = $uac -bor 0x80000 }
         $attrs = @{
-            sAMAccountName     = $c.SamAccountName
+            sAMAccountName     = (ConvertTo-AdComputerSamAccountName $c.SamAccountName)
             userAccountControl = $uac
             dNSHostName        = $c.DNSHostName
         }

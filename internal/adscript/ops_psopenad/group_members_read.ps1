@@ -1,7 +1,11 @@
         # PSOpenAD pages ranged multivalued attributes, so member is complete
         # for a group of any size. Never request member;range= explicitly.
         $g = Get-OpenADGroup @common -Identity $p.identity -Properties member
-        $members = foreach ($dn in @($g.Member)) {
+        # @($null) has length one, so an EMPTY group would run this body once with
+        # a null $dn and hand it to -Identity. The ADWS fragment iterates the bare
+        # property, which runs zero times; ConvertTo-AdArray is this dialect's
+        # existing answer to the same trap.
+        $members = foreach ($dn in @(ConvertTo-AdArray $g.Member)) {
             $mo = Get-OpenADObject @common -Identity $dn -Properties objectSid,objectClass
             [ordered]@{
                 objectGUID        = $mo.ObjectGuid.ToString()

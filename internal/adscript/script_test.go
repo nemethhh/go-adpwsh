@@ -318,3 +318,154 @@ func TestPSOpenADDialectCoverage(t *testing.T) {
 		}
 	}
 }
+
+// A read of nTSecurityDescriptor that does not say WHICH parts of the
+// descriptor it wants asks for all four, the SACL included. A caller without
+// SeSecurityPrivilege is not refused that read -- Active Directory returns the
+// attribute EMPTY, and PSOpenAD surfaces it as $null.
+//
+// That is why every read here must pass -SecurityMask, and why its absence is
+// so dangerous: it does not fail on the developer's Domain Admin account, only
+// on the least-privileged service account a real deployment uses. It then
+// fails two ways at once -- Set-AdProtected calls .Insert() on the null DACL
+// and throws InvokeMethodOnNull, while Convert-AdOU/Convert-AdUser quietly read
+// every Deny ACE as absent, so `protected` and `canChangePassword` come back
+// false no matter what the directory actually holds.
+//
+// Set-AdDacl already masks on the WRITE for a related reason (a descriptor
+// carrying a SACL is refused with CONSTRAINT_ATT_TYPE). The read needs it too.
+func TestPSOpenADReadsTheSecurityDescriptorWithAMask(t *testing.T) {
+	pre, err := files.ReadFile("ops_psopenad/preamble.ps1")
+	if err != nil {
+		t.Fatalf("read psopenad preamble: %v", err)
+	}
+	for _, line := range strings.Split(string(pre), "\n") {
+		if !strings.Contains(line, "Get-OpenADObject") {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(line), "ntsecuritydescriptor") {
+			continue
+		}
+		if !strings.Contains(line, "-SecurityMask") {
+			t.Errorf("Get-OpenADObject reads nTSecurityDescriptor without -SecurityMask:\n\t%s",
+				strings.TrimSpace(line))
+		}
+	}
+	// The property lists are handed to Get-OpenADObject by the op fragments, so
+	// a mask on the call site is only half the story: a list naming the
+	// descriptor commits every one of those call sites to masking.
+	for _, decl := range []string{"$AD_PROPS_OU", "$AD_PROPS_USER"} {
+		i := strings.Index(string(pre), decl)
+		if i < 0 {
+			t.Errorf("%s is gone; this guard no longer covers what it claims", decl)
+		}
+	}
+}
+
+// The op fragments are where those property lists are actually spent. Any
+// fragment that asks for a descriptor must mask the request.
+func TestPSOpenADFragmentsMaskTheirDescriptorReads(t *testing.T) {
+	entries, err := files.ReadDir("ops_psopenad")
+	if err != nil {
+		t.Fatalf("read psopenad ops: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() == "preamble.ps1" || !strings.HasSuffix(e.Name(), ".ps1") {
+			continue
+		}
+		b, err := files.ReadFile("ops_psopenad/" + e.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if !strings.Contains(line, "Get-OpenADObject") && !strings.Contains(line, "Get-OpenADUser") {
+				continue
+			}
+			l := strings.ToLower(line)
+			asksForSD := strings.Contains(l, "ntsecuritydescriptor") ||
+				strings.Contains(line, "$AD_PROPS_OU") || strings.Contains(line, "$AD_PROPS_USER")
+			if asksForSD && !strings.Contains(line, "-SecurityMask") {
+				t.Errorf("%s reads a security descriptor without -SecurityMask:\n\t%s",
+					e.Name(), strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// PSOpenAD decodes AD's interval attributes - accountExpires, pwdLastSet - to
+// DateTimeOffset, so the FILETIME sentinels do not survive as integers: 0
+// arrives as 1601-01-01 and 0x7FFFFFFFFFFFFFFF as MaxValue. Comparing one to a
+// number therefore silently never matches, which is how changePasswordAtLogon
+// came to read back false for every user however the account was actually
+// flagged.
+//
+// Both attributes must be read through a helper that knows the decoding.
+func TestPSOpenADReadsIntervalAttributesThroughAHelper(t *testing.T) {
+	pre, err := files.ReadFile("ops_psopenad/preamble.ps1")
+	if err != nil {
+		t.Fatalf("read psopenad preamble: %v", err)
+	}
+	helpers := map[string]string{
+		"PwdLastSet":     "Test-AdMustChangePassword",
+		"AccountExpires": "ConvertTo-AdIsoTime",
+	}
+	for _, line := range strings.Split(string(pre), "\n") {
+		for attr, helper := range helpers {
+			if !strings.Contains(line, "Get-AdPropValue") || !strings.Contains(line, "'"+attr+"'") {
+				continue
+			}
+			if !strings.Contains(line, helper) {
+				t.Errorf("%s is read without %s, so its FILETIME sentinel is compared "+
+					"against a DateTimeOffset:\n\t%s", attr, helper, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// The ActiveDirectory cmdlets supply conveniences that raw LDAP does not, and
+// every psopenad bug found on the lab so far has been one of them going
+// missing. Two are load-bearing enough to gate.
+//
+// New-ADComputer and New-ADServiceAccount append the trailing "$" that a
+// computer-class sAMAccountName requires; New-OpenADObject writes exactly what
+// it is given, and AD rejects the unsuffixed name with 0x523
+// ERROR_INVALID_ACCOUNT_NAME. The Go side deliberately never suffixes it - see
+// the comment on Computer.Update - so the fragment must.
+func TestPSOpenADSuffixesComputerClassAccountNames(t *testing.T) {
+	for _, name := range []string{"computer_create", "gmsa_create"} {
+		b, err := files.ReadFile("ops_psopenad/" + name + ".ps1")
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		src := string(b)
+		if !strings.Contains(src, "sAMAccountName") {
+			t.Errorf("%s no longer writes sAMAccountName; this guard is stale", name)
+			continue
+		}
+		if !strings.Contains(src, "ConvertTo-AdComputerSamAccountName") {
+			t.Errorf("%s writes sAMAccountName without ConvertTo-AdComputerSamAccountName, "+
+				"so an unsuffixed name reaches AD and is refused with 0x523", name)
+		}
+	}
+}
+
+// @($null) has length one, so `foreach ($x in @($maybeNull))` runs its body once
+// with a null - the trap the preamble's ConvertTo-AdArray comment already
+// warns about. group_members_read hit it on an EMPTY group and passed $null to
+// Get-OpenADObject -Identity. The ADWS fragment iterates the bare property, so
+// it runs zero times instead.
+func TestPSOpenADDoesNotIterateAWrappedNullableProperty(t *testing.T) {
+	b, err := files.ReadFile("ops_psopenad/group_members_read.ps1")
+	if err != nil {
+		t.Fatalf("read group_members_read: %v", err)
+	}
+	src := string(b)
+	if strings.Contains(src, "@($g.Member)") {
+		t.Error("group_members_read iterates @($g.Member), which on an EMPTY group is a " +
+			"one-element array holding null, so Get-OpenADObject -Identity gets $null")
+	}
+	if !strings.Contains(src, "ConvertTo-AdArray") {
+		t.Error("group_members_read no longer flattens the member set through " +
+			"ConvertTo-AdArray, which is what drops the null an empty group produces")
+	}
+}

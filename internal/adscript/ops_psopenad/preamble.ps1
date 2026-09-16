@@ -30,6 +30,9 @@ if ($common.ContainsKey('Credential')) { $credOnly['Credential'] = $common['Cred
 # Properties the OpenAD* classes already carry - SamAccountName, SID, Enabled,
 # UserPrincipalName, GivenName, Surname, GroupScope, GroupCategory,
 # userAccountControl - are fetched by the cmdlet regardless and are not listed.
+# Every list below that names nTSecurityDescriptor obliges its call sites to
+# pass -SecurityMask Dacl; see Get-AdDacl for why an unmasked read returns null
+# rather than failing.
 $AD_PROPS_OU    = @('description', 'nTSecurityDescriptor')
 $AD_PROPS_GROUP = @('description', 'managedBy')
 $AD_PROPS_USER  = @('description', 'displayName', 'pwdLastSet', 'accountExpires',
@@ -62,6 +65,20 @@ function ConvertTo-AdIsoTime($v) {
     $i = [int64]$v
     if ($i -eq 0 -or $i -eq 0x7FFFFFFFFFFFFFFF) { return $null }
     return ([DateTimeOffset]::FromFileTimeUtc($i)).UtcDateTime.ToString('o')
+}
+
+# pwdLastSet is an interval attribute too, so PSOpenAD decodes it the same way:
+# the FILETIME 0 that means "must change at next logon" arrives as a
+# DateTimeOffset of 1601-01-01, never as the integer 0. Comparing it to 0
+# therefore never matched, and changePasswordAtLogon read back false whatever
+# the directory held - the account was flagged, the DTO said it was not.
+#
+# The integer branch stays because the attribute is a FILETIME by definition and
+# a future module version handing back the raw value must keep working.
+function Test-AdMustChangePassword($v) {
+    if ($null -eq $v) { return $true }
+    if ($v -is [DateTimeOffset]) { return ($v.UtcDateTime.Year -le 1601) }
+    return ([int64]$v -eq 0)
 }
 
 # Description arrives as an array on some classes and a scalar on others. The Go
@@ -176,7 +193,7 @@ function Convert-AdUser($o) {
         description           = (ConvertTo-AdScalar (Get-AdPropValue $o 'Description'))
         enabled               = [bool]$o.Enabled
         sid                   = $o.SID.Value
-        changePasswordAtLogon = ((Get-AdPropValue $o 'PwdLastSet') -eq 0)
+        changePasswordAtLogon = (Test-AdMustChangePassword (Get-AdPropValue $o 'PwdLastSet'))
         canChangePassword     = (-not (Test-AdDenyAce $sd $CHANGE_PASSWORD_RIGHT @('S-1-1-0','S-1-5-10')))
         passwordExpires       = (($uac -band 0x10000) -eq 0)
         accountExpirationDate = (ConvertTo-AdIsoTime (Get-AdPropValue $o 'AccountExpires'))
@@ -303,6 +320,18 @@ function ConvertTo-AdEncTypeBits($values) {
         }
     }
     return $v
+}
+
+# A computer-class sAMAccountName - computer or gMSA - must end in "$".
+# New-ADComputer and New-ADServiceAccount append it themselves, so the Go side
+# deliberately never does (see the comment on Computer.Update, which compares
+# the suffixed value read back against the unsuffixed config value).
+# New-OpenADObject writes exactly what it is handed, and AD refuses an
+# unsuffixed name with 0x523 ERROR_INVALID_ACCOUNT_NAME.
+function ConvertTo-AdComputerSamAccountName($v) {
+    if ($null -eq $v -or "$v" -eq '') { return $v }
+    if ("$v".EndsWith('$')) { return "$v" }
+    return "$v" + '$'
 }
 
 # $p.set carries two kinds of entry. The typed fields arrive under Microsoft
@@ -442,8 +471,15 @@ function ConvertTo-AdAceSpec($a) {
     }
 }
 
+# -SecurityMask Dacl on the READ is not symmetry with Set-AdDacl below, it is a
+# correctness requirement of its own. A read that names no mask asks for all
+# four parts of the descriptor, the SACL included; a caller without
+# SeSecurityPrivilege is not refused it -- AD returns the attribute EMPTY and
+# PSOpenAD surfaces $null. That is invisible on a Domain Admin and breaks on
+# every least-privileged service account: .Insert() on the null DACL throws, and
+# the converters read every Deny ACE as absent.
 function Get-AdDacl($identity) {
-    $o = Get-OpenADObject @common -Identity $identity -Properties nTSecurityDescriptor
+    $o = Get-OpenADObject @common -Identity $identity -Properties nTSecurityDescriptor -SecurityMask Dacl
     return @{ dn = $o.DistinguishedName; guid = $o.ObjectGuid.ToString(); sd = $o.NTSecurityDescriptor }
 }
 

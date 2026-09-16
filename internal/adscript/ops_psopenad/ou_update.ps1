@@ -13,4 +13,4 @@
         }
         # After the move, never before: applied first, it would deny that move.
         if ($null -ne $p.protect) { Set-AdProtected $p.identity ([bool]$p.protect) }
-        Convert-AdOU (Get-OpenADObject @common -Identity $p.identity -Properties $AD_PROPS_OU)
+        Convert-AdOU (Get-OpenADObject @common -Identity $p.identity -Properties $AD_PROPS_OU -SecurityMask Dacl)
