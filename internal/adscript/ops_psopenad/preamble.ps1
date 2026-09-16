@@ -322,6 +322,18 @@ function ConvertTo-AdEncTypeBits($values) {
     return $v
 }
 
+# A computer-class sAMAccountName - computer or gMSA - must end in "$".
+# New-ADComputer and New-ADServiceAccount append it themselves, so the Go side
+# deliberately never does (see the comment on Computer.Update, which compares
+# the suffixed value read back against the unsuffixed config value).
+# New-OpenADObject writes exactly what it is handed, and AD refuses an
+# unsuffixed name with 0x523 ERROR_INVALID_ACCOUNT_NAME.
+function ConvertTo-AdComputerSamAccountName($v) {
+    if ($null -eq $v -or "$v" -eq '') { return $v }
+    if ("$v".EndsWith('$')) { return "$v" }
+    return "$v" + '$'
+}
+
 # $p.set carries two kinds of entry. The typed fields arrive under Microsoft
 # cmdlet parameter names and each fragment maps those per class, because the
 # mapping differs per class. Add/Remove/Replace/Clear arrive under raw LDAP

@@ -421,3 +421,51 @@ func TestPSOpenADReadsIntervalAttributesThroughAHelper(t *testing.T) {
 		}
 	}
 }
+
+// The ActiveDirectory cmdlets supply conveniences that raw LDAP does not, and
+// every psopenad bug found on the lab so far has been one of them going
+// missing. Two are load-bearing enough to gate.
+//
+// New-ADComputer and New-ADServiceAccount append the trailing "$" that a
+// computer-class sAMAccountName requires; New-OpenADObject writes exactly what
+// it is given, and AD rejects the unsuffixed name with 0x523
+// ERROR_INVALID_ACCOUNT_NAME. The Go side deliberately never suffixes it - see
+// the comment on Computer.Update - so the fragment must.
+func TestPSOpenADSuffixesComputerClassAccountNames(t *testing.T) {
+	for _, name := range []string{"computer_create", "gmsa_create"} {
+		b, err := files.ReadFile("ops_psopenad/" + name + ".ps1")
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		src := string(b)
+		if !strings.Contains(src, "sAMAccountName") {
+			t.Errorf("%s no longer writes sAMAccountName; this guard is stale", name)
+			continue
+		}
+		if !strings.Contains(src, "ConvertTo-AdComputerSamAccountName") {
+			t.Errorf("%s writes sAMAccountName without ConvertTo-AdComputerSamAccountName, "+
+				"so an unsuffixed name reaches AD and is refused with 0x523", name)
+		}
+	}
+}
+
+// @($null) has length one, so `foreach ($x in @($maybeNull))` runs its body once
+// with a null - the trap the preamble's ConvertTo-AdArray comment already
+// warns about. group_members_read hit it on an EMPTY group and passed $null to
+// Get-OpenADObject -Identity. The ADWS fragment iterates the bare property, so
+// it runs zero times instead.
+func TestPSOpenADDoesNotIterateAWrappedNullableProperty(t *testing.T) {
+	b, err := files.ReadFile("ops_psopenad/group_members_read.ps1")
+	if err != nil {
+		t.Fatalf("read group_members_read: %v", err)
+	}
+	src := string(b)
+	if strings.Contains(src, "@($g.Member)") {
+		t.Error("group_members_read iterates @($g.Member), which on an EMPTY group is a " +
+			"one-element array holding null, so Get-OpenADObject -Identity gets $null")
+	}
+	if !strings.Contains(src, "ConvertTo-AdArray") {
+		t.Error("group_members_read no longer flattens the member set through " +
+			"ConvertTo-AdArray, which is what drops the null an empty group produces")
+	}
+}
