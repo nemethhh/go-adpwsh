@@ -7,9 +7,15 @@
             userAccountControl = $uac
             dNSHostName        = $c.DNSHostName
         }
-        if ($c.ContainsKey('ManagedPasswordIntervalInDays')) {
-            $attrs['msDS-ManagedPasswordInterval'] = [int]$c.ManagedPasswordIntervalInDays
-        }
+        # msDS-ManagedPasswordInterval is the class's only systemMustContain
+        # attribute, so it is written unconditionally: New-ADServiceAccount
+        # supplies AD's own default when the caller omits one, and a raw LDAP add
+        # without it is refused with 0x207C OBJ_CLASS_VIOLATION. 30 is that
+        # default, and the provider documents reading it back.
+        $attrs['msDS-ManagedPasswordInterval'] =
+            if ($c.ContainsKey('ManagedPasswordIntervalInDays') -and $null -ne $c.ManagedPasswordIntervalInDays) {
+                [int]$c.ManagedPasswordIntervalInDays
+            } else { 30 }
         foreach ($pair in @(@('Description','description'), @('DisplayName','displayName'))) {
             if ($c.ContainsKey($pair[0]) -and $c[$pair[0]]) { $attrs[$pair[1]] = $c[$pair[0]] }
         }
