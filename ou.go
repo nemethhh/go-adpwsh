@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/nemethhh/go-adpwsh/internal/addn"
+	"github.com/nemethhh/go-adcore"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
 
@@ -24,7 +24,7 @@ type ouJSON struct {
 }
 
 func (j ouJSON) model() (*OU, error) {
-	container, err := containerOf(j.DN)
+	container, err := adcore.ContainerOf(j.DN)
 	if err != nil {
 		return nil, err
 	}
@@ -44,10 +44,10 @@ func (j ouJSON) model() (*OU, error) {
 // Ignoring the model orphans the object.
 func (o *OUClient) Create(ctx context.Context, spec OUSpec) (*OU, error) {
 	const op = "OU.Create"
-	if err := validateName(op, spec.Name); err != nil {
+	if err := adcore.ValidateName(op, spec.Name); err != nil {
 		return nil, err
 	}
-	if err := validateContainer(op, spec.Container); err != nil {
+	if err := adcore.ValidateContainer(op, spec.Container); err != nil {
 		return nil, err
 	}
 
@@ -78,10 +78,10 @@ func (o *OUClient) Create(ctx context.Context, spec OUSpec) (*OU, error) {
 func (o *OUClient) Get(ctx context.Context, id Identity) (*OU, error) {
 	var out ouJSON
 	if err := o.c.exec(ctx, adscript.OpOURead, map[string]any{
-		"identity": id.identityArg(),
+		"identity": adcore.IdentityArg(id),
 		"project":  ouProject,
 	}, &out); err != nil {
-		return nil, withIdentity(err, "OU.Get", id)
+		return nil, adcore.WithIdentity(err, "OU.Get", id)
 	}
 	model, err := out.model()
 	if err != nil {
@@ -95,11 +95,11 @@ func (o *OUClient) Get(ctx context.Context, id Identity) (*OU, error) {
 // script requests one row over the limit, and finding it means more exist.
 func (o *OUClient) Search(ctx context.Context, q Query) ([]OU, error) {
 	const op = "OU.Search"
-	q = q.withDefaults(o.c.dnc)
+	q = q.WithDefaults(o.c.dnc)
 	var out struct {
 		Results []ouJSON `json:"results"`
 	}
-	if err := o.c.exec(ctx, adscript.OpOUSearch, q.payload(ouProject), &out); err != nil {
+	if err := o.c.exec(ctx, adscript.OpOUSearch, queryPayload(q, ouProject), &out); err != nil {
 		return nil, err
 	}
 	if len(out.Results) > q.SizeLimit {
@@ -125,14 +125,14 @@ func (o *OUClient) Search(ctx context.Context, q Query) ([]OU, error) {
 // replication timeout.
 func (o *OUClient) Update(ctx context.Context, id Identity, spec OUSpec) (*OU, error) {
 	const op = "OU.Update"
-	if err := validateName(op, spec.Name); err != nil {
+	if err := adcore.ValidateName(op, spec.Name); err != nil {
 		return nil, err
 	}
-	if err := validateContainer(op, spec.Container); err != nil {
+	if err := adcore.ValidateContainer(op, spec.Container); err != nil {
 		return nil, err
 	}
 
-	unlock := o.c.locks.lock(id.identityArg())
+	unlock := o.c.locks.Lock(adcore.IdentityArg(id))
 	defer unlock()
 
 	current, err := o.Get(ctx, id)
@@ -140,10 +140,10 @@ func (o *OUClient) Update(ctx context.Context, id Identity, spec OUSpec) (*OU, e
 		return nil, err
 	}
 
-	payload := map[string]any{"identity": id.identityArg(), "project": ouProject}
+	payload := map[string]any{"identity": adcore.IdentityArg(id), "project": ouProject}
 
 	var ops adscript.AttrOps
-	set := map[string]any{"Identity": id.identityArg()}
+	set := map[string]any{"Identity": adcore.IdentityArg(id)}
 	applyStringField(&ops, set, "Description", "description", spec.Description)
 	if err := conflictToError(op, ops.Apply(set)); err != nil {
 		return nil, err
@@ -153,14 +153,14 @@ func (o *OUClient) Update(ctx context.Context, id Identity, spec OUSpec) (*OU, e
 	}
 
 	if spec.Name != current.Name {
-		payload["rename"] = map[string]any{"Identity": id.identityArg(), "NewName": spec.Name}
+		payload["rename"] = map[string]any{"Identity": adcore.IdentityArg(id), "NewName": spec.Name}
 	}
-	sameContainer, err := addn.EqualFold(spec.Container, current.Container)
+	sameContainer, err := adcore.EqualFoldDN(spec.Container, current.Container)
 	if err != nil {
 		return nil, &Error{Kind: KindConstraint, Op: op, Err: err}
 	}
 	if !sameContainer {
-		payload["move"] = map[string]any{"Identity": id.identityArg(), "TargetPath": spec.Container}
+		payload["move"] = map[string]any{"Identity": adcore.IdentityArg(id), "TargetPath": spec.Container}
 	}
 
 	// ProtectedFromAccidentalDeletion is deliberately not part of `set`, which
@@ -191,7 +191,7 @@ func (o *OUClient) Update(ctx context.Context, id Identity, spec OUSpec) (*OU, e
 
 	var out ouJSON
 	if err := o.c.exec(ctx, adscript.OpOUUpdate, payload, &out); err != nil {
-		return nil, withIdentity(err, op, id)
+		return nil, adcore.WithIdentity(err, op, id)
 	}
 	model, err := out.model()
 	if err != nil {
@@ -207,7 +207,7 @@ func (o *OUClient) Update(ctx context.Context, id Identity, spec OUSpec) (*OU, e
 func (o *OUClient) Delete(ctx context.Context, id Identity, opts DeleteOptions) error {
 	const op = "OU.Delete"
 
-	unlock := o.c.locks.lock(id.identityArg())
+	unlock := o.c.locks.Lock(adcore.IdentityArg(id))
 	defer unlock()
 
 	current, err := o.Get(ctx, id)
@@ -216,16 +216,16 @@ func (o *OUClient) Delete(ctx context.Context, id Identity, opts DeleteOptions) 
 	}
 
 	var out struct {
-		Deleted    bool          `json:"deleted"`
-		ChildCount int           `json:"childCount"`
-		Verify     presenceCheck `json:"verify"`
+		Deleted    bool                 `json:"deleted"`
+		ChildCount int                  `json:"childCount"`
+		Verify     adcore.PresenceCheck `json:"verify"`
 	}
 	if err := o.c.exec(ctx, adscript.OpOUDelete, map[string]any{
 		"identity":  current.GUID,
 		"dn":        current.DN,
 		"unprotect": opts.Unprotect,
 	}, &out); err != nil {
-		return withIdentity(err, op, id)
+		return adcore.WithIdentity(err, op, id)
 	}
 	if !out.Deleted {
 		return &Error{
@@ -234,7 +234,7 @@ func (o *OUClient) Delete(ctx context.Context, id Identity, opts DeleteOptions) 
 				"(recursive deletion is deliberately not offered)", out.ChildCount),
 		}
 	}
-	return out.Verify.confirmAbsent(op, id, current.DN)
+	return classify(out.Verify).ConfirmAbsent(op, id, current.DN)
 }
 
 // deletedOUFilter looks for a tombstoned OU under the same parent. Deleted
@@ -242,5 +242,5 @@ func (o *OUClient) Delete(ctx context.Context, id Identity, opts DeleteOptions) 
 // name prefix rather than on an exact name.
 func deletedOUFilter(name, container string) string {
 	return "(&(isDeleted=TRUE)(objectClass=organizationalUnit)(lastKnownParent=" +
-		addn.EscapeFilter(container) + ")(name=" + addn.EscapeFilter(name) + "*))"
+		adcore.EscapeFilter(container) + ")(name=" + adcore.EscapeFilter(name) + "*))"
 }

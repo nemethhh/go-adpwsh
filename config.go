@@ -3,6 +3,8 @@ package adpwsh
 import (
 	"context"
 	"time"
+
+	"github.com/nemethhh/go-adcore"
 )
 
 // Dialect selects which PowerShell script set an operation runs.
@@ -49,7 +51,7 @@ type Config struct {
 
 	// Retry governs re-attempts, and applies only to errors classified
 	// transient.
-	Retry RetryConfig
+	Retry adcore.RetryConfig
 
 	// Replication governs the post-write wait.
 	Replication ReplicationConfig
@@ -71,30 +73,6 @@ type Credential struct {
 // anything from Terraform.
 type Logger interface {
 	Debug(ctx context.Context, msg string, kv ...any)
-}
-
-// RetryConfig is values, not code.
-type RetryConfig struct {
-	MaxAttempts    int
-	InitialBackoff time.Duration
-	MaxBackoff     time.Duration
-	Jitter         float64 // fraction of the backoff, 0..1
-}
-
-func (r RetryConfig) withDefaults() RetryConfig {
-	if r.MaxAttempts <= 0 {
-		r.MaxAttempts = 4
-	}
-	if r.InitialBackoff <= 0 {
-		r.InitialBackoff = 250 * time.Millisecond
-	}
-	if r.MaxBackoff <= 0 {
-		r.MaxBackoff = 5 * time.Second
-	}
-	if r.Jitter < 0 || r.Jitter > 1 {
-		r.Jitter = 0.2
-	}
-	return r
 }
 
 // ReplicationConfig governs the wait that follows a write. Replication is a

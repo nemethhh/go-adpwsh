@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/nemethhh/go-adcore"
 )
 
 const plaintext = "P@ssw0rd-do-not-leak"
@@ -43,8 +45,8 @@ func TestSecretNeverMarshals(t *testing.T) {
 }
 
 func TestSecretReveal(t *testing.T) {
-	if got := NewSecret(plaintext).reveal(); got != plaintext {
-		t.Errorf("reveal() = %q, want the plaintext", got)
+	if got := adcore.RevealSecret(NewSecret(plaintext)); got != plaintext {
+		t.Errorf("RevealSecret = %q, want the plaintext", got)
 	}
 	if !NewSecret("").IsZero() {
 		t.Error("empty Secret must report IsZero")

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nemethhh/go-adcore"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
 
@@ -17,10 +18,10 @@ type core struct {
 	server string
 	dnc    string
 	cred   *Credential
-	retry  RetryConfig
+	retry  adcore.RetryConfig
 	repl   ReplicationConfig
 	log    Logger
-	locks  *keyedMutex
+	locks  *adcore.KeyedMutex
 
 	// dialect selects which script set exec composes from.
 	dialect Dialect
@@ -40,7 +41,7 @@ func (c *core) exec(ctx context.Context, op string, payload map[string]any, out 
 	if c.cred != nil {
 		payload["credential"] = map[string]any{
 			"username": c.cred.Username,
-			"password": c.cred.Password.reveal(),
+			"password": adcore.RevealSecret(c.cred.Password),
 		}
 	}
 
@@ -84,7 +85,7 @@ func (c *core) exec(ctx context.Context, op string, payload map[string]any, out 
 			return nil
 		}
 		var e *Error
-		if !asAdpwshError(lastErr, &e) || !e.Kind.retryable() || attempt == c.retry.MaxAttempts {
+		if !asAdpwshError(lastErr, &e) || !e.Kind.Retryable() || attempt == c.retry.MaxAttempts {
 			return lastErr
 		}
 		c.debug(ctx, "adpwsh: retrying transient failure", "op", op, "attempt", attempt, "error", lastErr.Error())

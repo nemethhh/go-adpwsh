@@ -3,7 +3,7 @@ package adschema
 import (
 	"testing"
 
-	"github.com/nemethhh/go-adpwsh/schema"
+	"github.com/nemethhh/go-adcore/schema"
 )
 
 // The floors were measured against a stock Windows Server 2025 schema

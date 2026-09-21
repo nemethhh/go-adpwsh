@@ -3,6 +3,7 @@ package adpwsh
 import (
 	"context"
 
+	"github.com/nemethhh/go-adcore"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
 
@@ -63,7 +64,7 @@ func inheritanceFromCmdlet(v string) Inheritance {
 func aceToPayload(aces []ACE) []map[string]any {
 	out := make([]map[string]any, len(aces))
 	for i, a := range aces {
-		inh, _ := a.Inheritance.cmdletValue()
+		inh, _ := cmdletInheritance(a.Inheritance)
 		rights := make([]string, len(a.Rights))
 		for j, r := range a.Rights {
 			rights[j] = string(r)
@@ -88,8 +89,8 @@ func (a *ACLClient) Get(ctx context.Context, target Identity) ([]ACE, error) {
 	var out struct {
 		ACEs []aceJSON `json:"aces"`
 	}
-	if err := a.c.exec(ctx, adscript.OpACLRead, map[string]any{"target": target.identityArg()}, &out); err != nil {
-		return nil, withIdentity(err, op, target)
+	if err := a.c.exec(ctx, adscript.OpACLRead, map[string]any{"target": adcore.IdentityArg(target)}, &out); err != nil {
+		return nil, adcore.WithIdentity(err, op, target)
 	}
 	aces := make([]ACE, len(out.ACEs))
 	for i, j := range out.ACEs {
@@ -105,15 +106,15 @@ func (a *ACLClient) Grant(ctx context.Context, target Identity, aces []ACE) erro
 	if len(aces) == 0 {
 		return nil
 	}
-	unlock := a.c.locks.lock(target.identityArg())
+	unlock := a.c.locks.Lock(adcore.IdentityArg(target))
 	defer unlock()
 	var out struct {
 		GUID string `json:"guid"`
 	}
 	if err := a.c.exec(ctx, adscript.OpACLGrant, map[string]any{
-		"target": target.identityArg(), "aces": aceToPayload(aces),
+		"target": adcore.IdentityArg(target), "aces": aceToPayload(aces),
 	}, &out); err != nil {
-		return withIdentity(err, op, target)
+		return adcore.WithIdentity(err, op, target)
 	}
 	return a.c.replicate(ctx, out.GUID)
 }
@@ -131,15 +132,15 @@ func (a *ACLClient) Revoke(ctx context.Context, target Identity, aces []ACE) err
 	if len(aces) == 0 {
 		return nil
 	}
-	unlock := a.c.locks.lock(target.identityArg())
+	unlock := a.c.locks.Lock(adcore.IdentityArg(target))
 	defer unlock()
 	var out struct {
 		GUID string `json:"guid"`
 	}
 	if err := a.c.exec(ctx, adscript.OpACLRevoke, map[string]any{
-		"target": target.identityArg(), "aces": aceToPayload(aces),
+		"target": adcore.IdentityArg(target), "aces": aceToPayload(aces),
 	}, &out); err != nil {
-		return withIdentity(err, op, target)
+		return adcore.WithIdentity(err, op, target)
 	}
 	return a.c.replicate(ctx, out.GUID)
 }

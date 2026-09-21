@@ -63,8 +63,8 @@ func TestClassify(t *testing.T) {
 // into a hang, so only KindTransient is ever retried.
 func TestOnlyTransientRetries(t *testing.T) {
 	for k := KindUnknown; k <= KindUnsupported; k++ {
-		if got := k.retryable(); got != (k == KindTransient) {
-			t.Errorf("Kind(%v).retryable() = %v", k, got)
+		if got := k.Retryable(); got != (k == KindTransient) {
+			t.Errorf("Kind(%v).Retryable() = %v", k, got)
 		}
 	}
 }

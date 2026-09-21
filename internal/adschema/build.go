@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nemethhh/go-adpwsh/schema"
+	"github.com/nemethhh/go-adcore/schema"
 )
 
 // searchFlagIndexed is searchFlags bit 0 — fATTINDEX. The catalog records the

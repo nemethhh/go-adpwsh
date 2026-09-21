@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/nemethhh/go-adpwsh/schema"
+	"github.com/nemethhh/go-adcore/schema"
 )
 
 // Emit serialises a catalog deterministically: object keys sorted, which

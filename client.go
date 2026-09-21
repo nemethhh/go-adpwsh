@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/nemethhh/go-adcore"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
 
@@ -42,11 +43,11 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		tr:      cfg.Transport,
 		server:  cfg.Server,
 		cred:    cfg.Credential,
-		retry:   cfg.Retry.withDefaults(),
+		retry:   cfg.Retry.WithDefaults(),
 		repl:    cfg.Replication.withDefaults(),
 		dialect: cfg.Dialect,
 		log:     cfg.Log,
-		locks:   newKeyedMutex(),
+		locks:   adcore.NewKeyedMutex(),
 	}
 
 	var rootDSE struct {

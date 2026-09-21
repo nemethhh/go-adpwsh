@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nemethhh/go-adpwsh/internal/addn"
+	"github.com/nemethhh/go-adcore"
 )
 
 // DirectoryObject is one object in the fake directory.
@@ -219,7 +219,7 @@ func rdnPrefix(class string) string {
 // "OU=Sales\, EMEA,DC=corp,DC=local" — and a fake that concatenates instead
 // hands its consumer a DN whose parent parses as "EMEA,DC=corp,DC=local".
 func buildDN(class, name, container string) string {
-	return rdnPrefix(class) + addn.EscapeValue(name) + "," + container
+	return rdnPrefix(class) + adcore.EscapeValue(name) + "," + container
 }
 
 func (d *Directory) handleCreate(c Call, class string) Response {
