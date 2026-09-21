@@ -50,8 +50,10 @@ func (j gmsaJSON) model() (*GMSA, error) {
 		SamAccountName: samWithoutDollar(j.SamAccountName),
 		Container:      container, SID: j.SID, DNSHostName: j.DNSHostName,
 		Description: j.Description, DisplayName: j.DisplayName, Enabled: j.Enabled,
-		TrustedForDelegation: j.TrustedForDelegation, PrincipalsAllowed: j.PrincipalsAllowed,
-		ServicePrincipalNames: j.ServicePrincipalNames, KerberosEncryptionType: j.KerberosEncryption,
+		TrustedForDelegation: j.TrustedForDelegation, PrincipalsAllowed: nilIfEmpty(j.PrincipalsAllowed),
+		// nil, not an empty slice, for the same reason a computer's are —
+		// see nilIfEmpty in computer.go.
+		ServicePrincipalNames: nilIfEmpty(j.ServicePrincipalNames), KerberosEncryptionType: nilIfEmpty(j.KerberosEncryption),
 		ManagedPasswordIntervalInDays: j.IntervalDays,
 	}
 	if j.AccountExpirationDate != nil && *j.AccountExpirationDate != "" {
