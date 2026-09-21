@@ -3,7 +3,7 @@ package adpwsh
 import (
 	"context"
 
-	"github.com/nemethhh/go-adpwsh/internal/addn"
+	"github.com/nemethhh/go-adcore"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
 
@@ -28,7 +28,7 @@ func wellKnownGUID(ref SchemaRef) (string, bool) {
 // resolveFilter builds the RFC 4515-escaped LDAP filter for a ref. The value is
 // escaped in Go and travels as a parameter, never as script text.
 func resolveFilter(ref SchemaRef) string {
-	name := addn.EscapeFilter(ref.Name)
+	name := adcore.EscapeFilter(ref.Name)
 	switch ref.Kind {
 	case RefClass:
 		return "(&(objectClass=classSchema)(lDAPDisplayName=" + name + "))"

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nemethhh/go-adpwsh/internal/addn"
+	"github.com/nemethhh/go-adcore"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
 
@@ -27,7 +27,7 @@ type groupJSON struct {
 }
 
 func (j groupJSON) model() (*Group, error) {
-	container, err := containerOf(j.DN)
+	container, err := adcore.ContainerOf(j.DN)
 	if err != nil {
 		return nil, err
 	}
@@ -43,14 +43,14 @@ func (j groupJSON) model() (*Group, error) {
 // timeout; the caller must persist the model and surface the error.
 func (g *GroupClient) Create(ctx context.Context, spec GroupSpec) (*Group, error) {
 	const op = "Group.Create"
-	if err := spec.validate(op, true); err != nil {
+	if err := spec.Validate(op, true); err != nil {
 		return nil, err
 	}
 	if spec.Category == "" {
 		spec.Category = GroupCategorySecurity
 	}
-	scope, _ := spec.Scope.cmdletValue()
-	category, _ := spec.Category.cmdletValue()
+	scope, _ := cmdletGroupScope(spec.Scope)
+	category, _ := cmdletGroupCategory(spec.Category)
 
 	create := map[string]any{
 		"Name":           spec.Name,
@@ -83,9 +83,9 @@ func (g *GroupClient) Create(ctx context.Context, spec GroupSpec) (*Group, error
 func (g *GroupClient) Get(ctx context.Context, id Identity) (*Group, error) {
 	var out groupJSON
 	if err := g.c.exec(ctx, adscript.OpGroupRead, map[string]any{
-		"identity": id.identityArg(), "project": groupProject,
+		"identity": adcore.IdentityArg(id), "project": groupProject,
 	}, &out); err != nil {
-		return nil, withIdentity(err, "Group.Get", id)
+		return nil, adcore.WithIdentity(err, "Group.Get", id)
 	}
 	model, err := out.model()
 	if err != nil {
@@ -97,11 +97,11 @@ func (g *GroupClient) Get(ctx context.Context, id Identity) (*Group, error) {
 // Search returns every group under q.SearchBase matching q.Filter.
 func (g *GroupClient) Search(ctx context.Context, q Query) ([]Group, error) {
 	const op = "Group.Search"
-	q = q.withDefaults(g.c.dnc)
+	q = q.WithDefaults(g.c.dnc)
 	var out struct {
 		Results []groupJSON `json:"results"`
 	}
-	if err := g.c.exec(ctx, adscript.OpGroupSearch, q.payload(groupProject), &out); err != nil {
+	if err := g.c.exec(ctx, adscript.OpGroupSearch, queryPayload(q, groupProject), &out); err != nil {
 		return nil, err
 	}
 	if len(out.Results) > q.SizeLimit {
@@ -123,11 +123,11 @@ func (g *GroupClient) Search(ctx context.Context, q Query) ([]Group, error) {
 // trip. Where AD refuses a scope conversion, AD's own error is surfaced.
 func (g *GroupClient) Update(ctx context.Context, id Identity, spec GroupSpec) (*Group, error) {
 	const op = "Group.Update"
-	if err := spec.validate(op, false); err != nil {
+	if err := spec.Validate(op, false); err != nil {
 		return nil, err
 	}
 
-	unlock := g.c.locks.lock(id.identityArg())
+	unlock := g.c.locks.Lock(adcore.IdentityArg(id))
 	defer unlock()
 
 	current, err := g.Get(ctx, id)
@@ -135,21 +135,21 @@ func (g *GroupClient) Update(ctx context.Context, id Identity, spec GroupSpec) (
 		return nil, err
 	}
 
-	payload := map[string]any{"identity": id.identityArg(), "project": groupProject}
+	payload := map[string]any{"identity": adcore.IdentityArg(id), "project": groupProject}
 
 	var ops adscript.AttrOps
-	set := map[string]any{"Identity": id.identityArg()}
+	set := map[string]any{"Identity": adcore.IdentityArg(id)}
 	applyStringField(&ops, set, "Description", "description", spec.Description)
 	applyStringField(&ops, set, "ManagedBy", "managedBy", spec.ManagedBy)
 	if spec.SamAccountName != current.SamAccountName {
 		set["SamAccountName"] = spec.SamAccountName
 	}
 	if spec.Scope != "" && spec.Scope != current.Scope {
-		v, _ := spec.Scope.cmdletValue()
+		v, _ := cmdletGroupScope(spec.Scope)
 		set["GroupScope"] = v
 	}
 	if spec.Category != "" && spec.Category != current.Category {
-		v, _ := spec.Category.cmdletValue()
+		v, _ := cmdletGroupCategory(spec.Category)
 		set["GroupCategory"] = v
 	}
 	if err := conflictToError(op, ops.Apply(set)); err != nil {
@@ -160,14 +160,14 @@ func (g *GroupClient) Update(ctx context.Context, id Identity, spec GroupSpec) (
 	}
 
 	if spec.Name != current.Name {
-		payload["rename"] = map[string]any{"Identity": id.identityArg(), "NewName": spec.Name}
+		payload["rename"] = map[string]any{"Identity": adcore.IdentityArg(id), "NewName": spec.Name}
 	}
-	sameContainer, err := addn.EqualFold(spec.Container, current.Container)
+	sameContainer, err := adcore.EqualFoldDN(spec.Container, current.Container)
 	if err != nil {
 		return nil, &Error{Kind: KindConstraint, Op: op, Err: err}
 	}
 	if !sameContainer {
-		payload["move"] = map[string]any{"Identity": id.identityArg(), "TargetPath": spec.Container}
+		payload["move"] = map[string]any{"Identity": adcore.IdentityArg(id), "TargetPath": spec.Container}
 	}
 
 	if payload["set"] == nil && payload["rename"] == nil && payload["move"] == nil {
@@ -176,7 +176,7 @@ func (g *GroupClient) Update(ctx context.Context, id Identity, spec GroupSpec) (
 
 	var out groupJSON
 	if err := g.c.exec(ctx, adscript.OpGroupUpdate, payload, &out); err != nil {
-		return nil, withIdentity(err, op, id)
+		return nil, adcore.WithIdentity(err, op, id)
 	}
 	model, err := out.model()
 	if err != nil {
@@ -190,7 +190,7 @@ func (g *GroupClient) Update(ctx context.Context, id Identity, spec GroupSpec) (
 func (g *GroupClient) Delete(ctx context.Context, id Identity) error {
 	const op = "Group.Delete"
 
-	unlock := g.c.locks.lock(id.identityArg())
+	unlock := g.c.locks.Lock(adcore.IdentityArg(id))
 	defer unlock()
 
 	current, err := g.Get(ctx, id)
@@ -198,20 +198,20 @@ func (g *GroupClient) Delete(ctx context.Context, id Identity) error {
 		return err
 	}
 	var out struct {
-		Deleted bool          `json:"deleted"`
-		Verify  presenceCheck `json:"verify"`
+		Deleted bool                 `json:"deleted"`
+		Verify  adcore.PresenceCheck `json:"verify"`
 	}
 	if err := g.c.exec(ctx, adscript.OpGroupDelete, map[string]any{"identity": current.GUID}, &out); err != nil {
-		return withIdentity(err, op, id)
+		return adcore.WithIdentity(err, op, id)
 	}
-	return out.Verify.confirmAbsent(op, id, current.DN)
+	return classify(out.Verify).ConfirmAbsent(op, id, current.DN)
 }
 
 // deletedPrincipalFilter finds a tombstoned security principal. A deleted
 // object keeps its sAMAccountName, which is exactly what blocks re-creation
 // with an opaque error.
 func deletedPrincipalFilter(sam string) string {
-	return "(&(isDeleted=TRUE)(sAMAccountName=" + addn.EscapeFilter(sam) + "))"
+	return "(&(isDeleted=TRUE)(sAMAccountName=" + adcore.EscapeFilter(sam) + "))"
 }
 
 type memberJSON struct {
@@ -225,7 +225,7 @@ type memberJSON struct {
 func identityArgs(ids []Identity) []string {
 	out := make([]string, len(ids))
 	for i, id := range ids {
-		out[i] = id.identityArg()
+		out[i] = adcore.IdentityArg(id)
 	}
 	return out
 }
@@ -238,9 +238,9 @@ func (g *GroupClient) Members(ctx context.Context, group Identity) ([]Member, er
 		Members []memberJSON `json:"members"`
 	}
 	if err := g.c.exec(ctx, adscript.OpGroupMembersRead, map[string]any{
-		"identity": group.identityArg(),
+		"identity": adcore.IdentityArg(group),
 	}, &out); err != nil {
-		return nil, withIdentity(err, op, group)
+		return nil, adcore.WithIdentity(err, op, group)
 	}
 	members := make([]Member, len(out.Members))
 	for i, m := range out.Members {
@@ -261,9 +261,9 @@ func (g *GroupClient) MembersRecursive(ctx context.Context, group Identity) ([]M
 		Members []memberJSON `json:"members"`
 	}
 	if err := g.c.exec(ctx, adscript.OpGroupMembersReadRecursive, map[string]any{
-		"identity": group.identityArg(),
+		"identity": adcore.IdentityArg(group),
 	}, &out); err != nil {
-		return nil, withIdentity(err, op, group)
+		return nil, adcore.WithIdentity(err, op, group)
 	}
 	members := make([]Member, len(out.Members))
 	for i, m := range out.Members {
@@ -280,15 +280,15 @@ func (g *GroupClient) AddMembers(ctx context.Context, group Identity, members []
 	if len(members) == 0 {
 		return nil
 	}
-	unlock := g.c.locks.lock(group.identityArg())
+	unlock := g.c.locks.Lock(adcore.IdentityArg(group))
 	defer unlock()
 	var out struct {
 		GUID string `json:"guid"`
 	}
 	if err := g.c.exec(ctx, adscript.OpGroupMembersAdd, map[string]any{
-		"identity": group.identityArg(), "members": identityArgs(members),
+		"identity": adcore.IdentityArg(group), "members": identityArgs(members),
 	}, &out); err != nil {
-		return withIdentity(err, op, group)
+		return adcore.WithIdentity(err, op, group)
 	}
 	return g.c.replicate(ctx, out.GUID)
 }
@@ -301,18 +301,18 @@ func (g *GroupClient) RemoveMembers(ctx context.Context, group Identity, members
 	if len(members) == 0 {
 		return nil
 	}
-	unlock := g.c.locks.lock(group.identityArg())
+	unlock := g.c.locks.Lock(adcore.IdentityArg(group))
 	defer unlock()
 	var out struct {
 		GUID string `json:"guid"`
 	}
 	if err := g.c.exec(ctx, adscript.OpGroupMembersRemove, map[string]any{
-		"identity": group.identityArg(), "members": identityArgs(members),
+		"identity": adcore.IdentityArg(group), "members": identityArgs(members),
 	}, &out); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}
-		return withIdentity(err, op, group)
+		return adcore.WithIdentity(err, op, group)
 	}
 	return g.c.replicate(ctx, out.GUID)
 }
@@ -326,12 +326,12 @@ func (g *GroupClient) IsMember(ctx context.Context, group, member Identity) (boo
 		Member bool `json:"member"`
 	}
 	if err := g.c.exec(ctx, adscript.OpGroupMemberCheck, map[string]any{
-		"group": group.identityArg(), "member": member.identityArg(),
+		"group": adcore.IdentityArg(group), "member": adcore.IdentityArg(member),
 	}, &out); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return false, nil
 		}
-		return false, withIdentity(err, op, group)
+		return false, adcore.WithIdentity(err, op, group)
 	}
 	return out.Member, nil
 }

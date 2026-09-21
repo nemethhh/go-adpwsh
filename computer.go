@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nemethhh/go-adpwsh/internal/addn"
+	"github.com/nemethhh/go-adcore"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
 
@@ -55,7 +55,7 @@ type computerJSON struct {
 }
 
 func (j computerJSON) model() (*Computer, error) {
-	container, err := containerOf(j.DistinguishedName)
+	container, err := adcore.ContainerOf(j.DistinguishedName)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +92,7 @@ type ComputerClient struct{ c *core }
 // are not on ComputerSpec.
 func (cc *ComputerClient) Create(ctx context.Context, spec ComputerSpec) (*Computer, error) {
 	const op = "Computer.Create"
-	if err := spec.validate(op, true); err != nil {
+	if err := spec.Validate(op, true); err != nil {
 		return nil, err
 	}
 
@@ -167,9 +167,9 @@ func (cc *ComputerClient) Create(ctx context.Context, spec ComputerSpec) (*Compu
 func (cc *ComputerClient) Get(ctx context.Context, id Identity) (*Computer, error) {
 	var out computerJSON
 	if err := cc.c.exec(ctx, adscript.OpComputerRead, map[string]any{
-		"identity": id.identityArg(), "project": computerProject,
+		"identity": adcore.IdentityArg(id), "project": computerProject,
 	}, &out); err != nil {
-		return nil, withIdentity(err, "Computer.Get", id)
+		return nil, adcore.WithIdentity(err, "Computer.Get", id)
 	}
 	model, err := out.model()
 	if err != nil {
@@ -181,11 +181,11 @@ func (cc *ComputerClient) Get(ctx context.Context, id Identity) (*Computer, erro
 // Search returns every computer account under q.SearchBase matching q.Filter.
 func (cc *ComputerClient) Search(ctx context.Context, q Query) ([]Computer, error) {
 	const op = "Computer.Search"
-	q = q.withDefaults(cc.c.dnc)
+	q = q.WithDefaults(cc.c.dnc)
 	var out struct {
 		Results []computerJSON `json:"results"`
 	}
-	if err := cc.c.exec(ctx, adscript.OpComputerSearch, q.payload(computerProject), &out); err != nil {
+	if err := cc.c.exec(ctx, adscript.OpComputerSearch, queryPayload(q, computerProject), &out); err != nil {
 		return nil, err
 	}
 	if len(out.Results) > q.SizeLimit {
@@ -207,11 +207,11 @@ func (cc *ComputerClient) Search(ctx context.Context, q Query) ([]Computer, erro
 // trip.
 func (cc *ComputerClient) Update(ctx context.Context, id Identity, spec ComputerSpec) (*Computer, error) {
 	const op = "Computer.Update"
-	if err := spec.validate(op, false); err != nil {
+	if err := spec.Validate(op, false); err != nil {
 		return nil, err
 	}
 
-	unlock := cc.c.locks.lock(id.identityArg())
+	unlock := cc.c.locks.Lock(adcore.IdentityArg(id))
 	defer unlock()
 
 	current, err := cc.Get(ctx, id)
@@ -219,10 +219,10 @@ func (cc *ComputerClient) Update(ctx context.Context, id Identity, spec Computer
 		return nil, err
 	}
 
-	payload := map[string]any{"identity": id.identityArg(), "project": computerProject}
+	payload := map[string]any{"identity": adcore.IdentityArg(id), "project": computerProject}
 
 	var ops adscript.AttrOps
-	set := map[string]any{"Identity": id.identityArg()}
+	set := map[string]any{"Identity": adcore.IdentityArg(id)}
 	applyStringField(&ops, set, "DNSHostName", "dNSHostName", spec.DNSHostName)
 	applyStringField(&ops, set, "Description", "description", spec.Description)
 	applyStringField(&ops, set, "DisplayName", "displayName", spec.DisplayName)
@@ -293,14 +293,14 @@ func (cc *ComputerClient) Update(ctx context.Context, id Identity, spec Computer
 	}
 
 	if spec.Name != current.Name {
-		payload["rename"] = map[string]any{"Identity": id.identityArg(), "NewName": spec.Name}
+		payload["rename"] = map[string]any{"Identity": adcore.IdentityArg(id), "NewName": spec.Name}
 	}
-	sameContainer, err := addn.EqualFold(spec.Container, current.Container)
+	sameContainer, err := adcore.EqualFoldDN(spec.Container, current.Container)
 	if err != nil {
 		return nil, &Error{Kind: KindConstraint, Op: op, Err: err}
 	}
 	if !sameContainer {
-		payload["move"] = map[string]any{"Identity": id.identityArg(), "TargetPath": spec.Container}
+		payload["move"] = map[string]any{"Identity": adcore.IdentityArg(id), "TargetPath": spec.Container}
 	}
 
 	if payload["set"] == nil && payload["rename"] == nil && payload["move"] == nil {
@@ -309,7 +309,7 @@ func (cc *ComputerClient) Update(ctx context.Context, id Identity, spec Computer
 
 	var out computerJSON
 	if err := cc.c.exec(ctx, adscript.OpComputerUpdate, payload, &out); err != nil {
-		return nil, withIdentity(err, op, id)
+		return nil, adcore.WithIdentity(err, op, id)
 	}
 	model, err := out.model()
 	if err != nil {
@@ -323,7 +323,7 @@ func (cc *ComputerClient) Update(ctx context.Context, id Identity, spec Computer
 func (cc *ComputerClient) Delete(ctx context.Context, id Identity) error {
 	const op = "Computer.Delete"
 
-	unlock := cc.c.locks.lock(id.identityArg())
+	unlock := cc.c.locks.Lock(adcore.IdentityArg(id))
 	defer unlock()
 
 	current, err := cc.Get(ctx, id)
@@ -331,11 +331,11 @@ func (cc *ComputerClient) Delete(ctx context.Context, id Identity) error {
 		return err
 	}
 	var out struct {
-		Deleted bool          `json:"deleted"`
-		Verify  presenceCheck `json:"verify"`
+		Deleted bool                 `json:"deleted"`
+		Verify  adcore.PresenceCheck `json:"verify"`
 	}
 	if err := cc.c.exec(ctx, adscript.OpComputerDelete, map[string]any{"identity": current.GUID}, &out); err != nil {
-		return withIdentity(err, op, id)
+		return adcore.WithIdentity(err, op, id)
 	}
-	return out.Verify.confirmAbsent(op, id, current.DN)
+	return classify(out.Verify).ConfirmAbsent(op, id, current.DN)
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nemethhh/go-adcore"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
 
@@ -25,7 +26,7 @@ func (f *captureFake) Constrained() bool { return f.constrained }
 
 func TestACLOpSelectsCLMScriptWhenConstrained(t *testing.T) {
 	f := &captureFake{constrained: true}
-	c := &core{tr: f, retry: RetryConfig{MaxAttempts: 1}}
+	c := &core{tr: f, retry: adcore.RetryConfig{MaxAttempts: 1}}
 	_ = c.exec(context.Background(), adscript.OpACLGrant, map[string]any{"target": "x", "aces": []any{}}, nil)
 	if !strings.Contains(f.lastScript, "Set-AdAce") {
 		t.Fatalf("constrained ACL op must run the _clm script that calls Set-AdAce; got:\n%s", f.lastScript)
@@ -34,7 +35,7 @@ func TestACLOpSelectsCLMScriptWhenConstrained(t *testing.T) {
 
 func TestACLOpSelectsInlineScriptWhenFull(t *testing.T) {
 	f := &captureFake{constrained: false}
-	c := &core{tr: f, retry: RetryConfig{MaxAttempts: 1}}
+	c := &core{tr: f, retry: adcore.RetryConfig{MaxAttempts: 1}}
 	_ = c.exec(context.Background(), adscript.OpACLGrant, map[string]any{"target": "x", "aces": []any{}}, nil)
 	if !strings.Contains(f.lastScript, "ActiveDirectoryAccessRule") || strings.Contains(f.lastScript, "Set-AdAce") {
 		t.Fatalf("full ACL op must run the inline script; got:\n%s", f.lastScript)

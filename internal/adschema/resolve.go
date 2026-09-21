@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nemethhh/go-adpwsh/schema"
+	"github.com/nemethhh/go-adcore/schema"
 )
 
 // objectClassCategory values, from the schema itself: 0 is an 88-class, 1

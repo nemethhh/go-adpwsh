@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nemethhh/go-adpwsh/internal/addn"
+	"github.com/nemethhh/go-adcore"
 	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
 
@@ -40,7 +40,7 @@ type userJSON struct {
 }
 
 func (j userJSON) model() (*User, error) {
-	container, err := containerOf(j.DN)
+	container, err := adcore.ContainerOf(j.DN)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (j userJSON) model() (*User, error) {
 // being papered over by silently creating a disabled account.
 func (u *UserClient) Create(ctx context.Context, spec UserSpec) (*User, error) {
 	const op = "User.Create"
-	if err := spec.validate(op); err != nil {
+	if err := spec.Validate(op); err != nil {
 		return nil, err
 	}
 
@@ -111,7 +111,7 @@ func (u *UserClient) Create(ctx context.Context, spec UserSpec) (*User, error) {
 	if spec.Password != nil && !spec.Password.IsZero() {
 		// The plaintext rides beside the splat; the script turns it into a
 		// SecureString. A Secret in the splat would fail to marshal, loudly.
-		payload["password"] = spec.Password.reveal()
+		payload["password"] = adcore.RevealSecret(*spec.Password)
 	}
 
 	var out userJSON
@@ -129,9 +129,9 @@ func (u *UserClient) Create(ctx context.Context, spec UserSpec) (*User, error) {
 func (u *UserClient) Get(ctx context.Context, id Identity) (*User, error) {
 	var out userJSON
 	if err := u.c.exec(ctx, adscript.OpUserRead, map[string]any{
-		"identity": id.identityArg(), "project": userProject,
+		"identity": adcore.IdentityArg(id), "project": userProject,
 	}, &out); err != nil {
-		return nil, withIdentity(err, "User.Get", id)
+		return nil, adcore.WithIdentity(err, "User.Get", id)
 	}
 	model, err := out.model()
 	if err != nil {
@@ -143,11 +143,11 @@ func (u *UserClient) Get(ctx context.Context, id Identity) (*User, error) {
 // Search returns every user under q.SearchBase matching q.Filter.
 func (u *UserClient) Search(ctx context.Context, q Query) ([]User, error) {
 	const op = "User.Search"
-	q = q.withDefaults(u.c.dnc)
+	q = q.WithDefaults(u.c.dnc)
 	var out struct {
 		Results []userJSON `json:"results"`
 	}
-	if err := u.c.exec(ctx, adscript.OpUserSearch, q.payload(userProject), &out); err != nil {
+	if err := u.c.exec(ctx, adscript.OpUserSearch, queryPayload(q, userProject), &out); err != nil {
 		return nil, err
 	}
 	if len(out.Results) > q.SizeLimit {
@@ -170,11 +170,11 @@ func (u *UserClient) Search(ctx context.Context, q Query) ([]User, error) {
 // Set-ADUser, so rotation goes through SetPassword.
 func (u *UserClient) Update(ctx context.Context, id Identity, spec UserSpec) (*User, error) {
 	const op = "User.Update"
-	if err := spec.validate(op); err != nil {
+	if err := spec.Validate(op); err != nil {
 		return nil, err
 	}
 
-	unlock := u.c.locks.lock(id.identityArg())
+	unlock := u.c.locks.Lock(adcore.IdentityArg(id))
 	defer unlock()
 
 	current, err := u.Get(ctx, id)
@@ -182,10 +182,10 @@ func (u *UserClient) Update(ctx context.Context, id Identity, spec UserSpec) (*U
 		return nil, err
 	}
 
-	payload := map[string]any{"identity": id.identityArg(), "project": userProject}
+	payload := map[string]any{"identity": adcore.IdentityArg(id), "project": userProject}
 
 	var ops adscript.AttrOps
-	set := map[string]any{"Identity": id.identityArg()}
+	set := map[string]any{"Identity": adcore.IdentityArg(id)}
 	for _, f := range userTier1 {
 		applyStringField(&ops, set, f.Param, f.LDAP, f.Get(spec))
 	}
@@ -224,14 +224,14 @@ func (u *UserClient) Update(ctx context.Context, id Identity, spec UserSpec) (*U
 	}
 
 	if spec.Name != nil && *spec.Name != "" && *spec.Name != current.Name {
-		payload["rename"] = map[string]any{"Identity": id.identityArg(), "NewName": *spec.Name}
+		payload["rename"] = map[string]any{"Identity": adcore.IdentityArg(id), "NewName": *spec.Name}
 	}
-	sameContainer, err := addn.EqualFold(spec.Container, current.Container)
+	sameContainer, err := adcore.EqualFoldDN(spec.Container, current.Container)
 	if err != nil {
 		return nil, &Error{Kind: KindConstraint, Op: op, Err: err}
 	}
 	if !sameContainer {
-		payload["move"] = map[string]any{"Identity": id.identityArg(), "TargetPath": spec.Container}
+		payload["move"] = map[string]any{"Identity": adcore.IdentityArg(id), "TargetPath": spec.Container}
 	}
 
 	if payload["set"] == nil && payload["rename"] == nil && payload["move"] == nil {
@@ -240,7 +240,7 @@ func (u *UserClient) Update(ctx context.Context, id Identity, spec UserSpec) (*U
 
 	var out userJSON
 	if err := u.c.exec(ctx, adscript.OpUserUpdate, payload, &out); err != nil {
-		return nil, withIdentity(err, op, id)
+		return nil, adcore.WithIdentity(err, op, id)
 	}
 	model, err := out.model()
 	if err != nil {
@@ -257,17 +257,17 @@ func (u *UserClient) SetPassword(ctx context.Context, id Identity, pw Secret) er
 		return &Error{Kind: KindPassword, Op: op, Identity: id.String(), Err: errEmptyPassword}
 	}
 
-	unlock := u.c.locks.lock(id.identityArg())
+	unlock := u.c.locks.Lock(adcore.IdentityArg(id))
 	defer unlock()
 
 	var out struct {
 		Reset bool `json:"reset"`
 	}
 	if err := u.c.exec(ctx, adscript.OpUserSetPassword, map[string]any{
-		"identity": id.identityArg(),
-		"password": pw.reveal(),
+		"identity": adcore.IdentityArg(id),
+		"password": adcore.RevealSecret(pw),
 	}, &out); err != nil {
-		return withIdentity(err, op, id)
+		return adcore.WithIdentity(err, op, id)
 	}
 	return nil
 }
@@ -277,7 +277,7 @@ func (u *UserClient) SetPassword(ctx context.Context, id Identity, pw Secret) er
 func (u *UserClient) Delete(ctx context.Context, id Identity) error {
 	const op = "User.Delete"
 
-	unlock := u.c.locks.lock(id.identityArg())
+	unlock := u.c.locks.Lock(adcore.IdentityArg(id))
 	defer unlock()
 
 	current, err := u.Get(ctx, id)
@@ -285,11 +285,11 @@ func (u *UserClient) Delete(ctx context.Context, id Identity) error {
 		return err
 	}
 	var out struct {
-		Deleted bool          `json:"deleted"`
-		Verify  presenceCheck `json:"verify"`
+		Deleted bool                 `json:"deleted"`
+		Verify  adcore.PresenceCheck `json:"verify"`
 	}
 	if err := u.c.exec(ctx, adscript.OpUserDelete, map[string]any{"identity": current.GUID}, &out); err != nil {
-		return withIdentity(err, op, id)
+		return adcore.WithIdentity(err, op, id)
 	}
-	return out.Verify.confirmAbsent(op, id, current.DN)
+	return classify(out.Verify).ConfirmAbsent(op, id, current.DN)
 }

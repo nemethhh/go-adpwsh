@@ -1,6 +1,10 @@
 package adpwsh
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/nemethhh/go-adcore"
+)
 
 func TestIdentityConstructors(t *testing.T) {
 	tests := []struct {
@@ -16,10 +20,10 @@ func TestIdentityConstructors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.id.identityArg(); got != tt.wantArg {
+			if got := adcore.IdentityArg(tt.id); got != tt.wantArg {
 				t.Errorf("identityArg() = %q, want %q", got, tt.wantArg)
 			}
-			if got := tt.id.identityForm(); got != tt.wantForm {
+			if got := adcore.IdentityForm(tt.id); got != tt.wantForm {
 				t.Errorf("identityForm() = %q, want %q", got, tt.wantForm)
 			}
 		})
