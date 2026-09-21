@@ -3,7 +3,6 @@ package adpwsh
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nemethhh/go-adcore"
@@ -45,8 +44,11 @@ func (j gmsaJSON) model() (*GMSA, error) {
 		return nil, err
 	}
 	g := &GMSA{
-		GUID: j.GUID, DN: j.DN, Name: j.Name, SamAccountName: j.SamAccountName,
-		Container: container, SID: j.SID, DNSHostName: j.DNSHostName,
+		GUID: j.GUID, DN: j.DN, Name: j.Name,
+		// The "$" AD appends on read is stripped here for the same reason it
+		// is on a computer: GMSASpec.SamAccountName is the un-suffixed base.
+		SamAccountName: samWithoutDollar(j.SamAccountName),
+		Container:      container, SID: j.SID, DNSHostName: j.DNSHostName,
 		Description: j.Description, DisplayName: j.DisplayName, Enabled: j.Enabled,
 		TrustedForDelegation: j.TrustedForDelegation, PrincipalsAllowed: j.PrincipalsAllowed,
 		ServicePrincipalNames: j.ServicePrincipalNames, KerberosEncryptionType: j.KerberosEncryption,
@@ -194,7 +196,7 @@ func (s *ServiceAccountClient) Update(ctx context.Context, id Identity, spec GMS
 	// spec.SamAccountName, the config value, never is. Comparing the two
 	// directly would be always-true and churn -SamAccountName on every
 	// update; strip the suffix current carries before diffing.
-	if spec.SamAccountName != strings.TrimSuffix(current.SamAccountName, "$") {
+	if spec.SamAccountName != samWithoutDollar(current.SamAccountName) {
 		set["SamAccountName"] = spec.SamAccountName
 	}
 	if spec.Enabled != nil && *spec.Enabled != current.Enabled {

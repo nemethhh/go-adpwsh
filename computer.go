@@ -54,6 +54,12 @@ type computerJSON struct {
 	OperatingSystemServicePack string   `json:"OperatingSystemServicePack"`
 }
 
+// samWithoutDollar drops the trailing "$" Active Directory appends to a
+// computer or gMSA sAMAccountName on read. The specs carry the un-suffixed
+// base, so the models do too: the two spellings in one contract is a
+// permanent diff for anything comparing a spec with a read-back.
+func samWithoutDollar(s string) string { return strings.TrimSuffix(s, "$") }
+
 func (j computerJSON) model() (*Computer, error) {
 	container, err := adcore.ContainerOf(j.DistinguishedName)
 	if err != nil {
@@ -61,7 +67,12 @@ func (j computerJSON) model() (*Computer, error) {
 	}
 	c := &Computer{
 		GUID: j.ObjectGUID, DN: j.DistinguishedName, Name: j.Name,
-		SamAccountName: j.SamAccountName, Container: container, SID: j.SID, Enabled: j.Enabled,
+		// The "$" AD appends on read is stripped here, not by each consumer.
+		// ComputerSpec.SamAccountName carries the un-suffixed base, so a model
+		// that kept the suffix would differ from the spec that produced it,
+		// and from go-adldap's model of the same object — which is exactly
+		// what the cross-backend differential suite caught.
+		SamAccountName: samWithoutDollar(j.SamAccountName), Container: container, SID: j.SID, Enabled: j.Enabled,
 		DNSHostName: j.DNSHostName, Description: j.Description, DisplayName: j.DisplayName,
 		Location: j.Location, ManagedBy: j.ManagedBy,
 		TrustedForDelegation:  j.TrustedForDelegation,
@@ -228,12 +239,11 @@ func (cc *ComputerClient) Update(ctx context.Context, id Identity, spec Computer
 	applyStringField(&ops, set, "DisplayName", "displayName", spec.DisplayName)
 	applyStringField(&ops, set, "Location", "location", spec.Location)
 	applyStringField(&ops, set, "ManagedBy", "managedBy", spec.ManagedBy)
-	// AD appends "$" to a computer's sAMAccountName (see Create/the fake's
-	// handleCreate), so current.SamAccountName is already suffixed while
-	// spec.SamAccountName, the config value, never is. Comparing the two
-	// directly would be always-true and churn -SamAccountName on every
-	// update; strip the suffix current carries before diffing.
-	if spec.SamAccountName != strings.TrimSuffix(current.SamAccountName, "$") {
+	// current.SamAccountName is already un-suffixed, because model() strips
+	// the "$" AD appends. TrimSuffix stays for a current that came from
+	// somewhere that did not — it is idempotent, and dropping it would make
+	// this comparison always-true and churn -SamAccountName on every update.
+	if spec.SamAccountName != samWithoutDollar(current.SamAccountName) {
 		set["SamAccountName"] = spec.SamAccountName
 	}
 	if spec.Enabled != nil && *spec.Enabled != current.Enabled {
