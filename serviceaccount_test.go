@@ -27,9 +27,10 @@ func TestServiceAccountCreateGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// AD itself appends the trailing "$" to a gMSA's sAMAccountName.
-	if g.SamAccountName != "svc-web$" {
-		t.Fatalf("sam = %q, want svc-web$", g.SamAccountName)
+	// AD itself appends a trailing "$" to a gMSA's sAMAccountName, and
+	// model() strips it again: the spec and the model speak one spelling.
+	if g.SamAccountName != "svc-web" {
+		t.Fatalf("sam = %q, want svc-web", g.SamAccountName)
 	}
 	if g.DNSHostName != "svc-web.corp.local" || g.Container != "OU=x,DC=corp,DC=local" {
 		t.Fatalf("created gMSA = %+v", g)
@@ -39,7 +40,7 @@ func TestServiceAccountCreateGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.GUID != g.GUID || got.SamAccountName != "svc-web$" || got.DNSHostName != "svc-web.corp.local" {
+	if got.GUID != g.GUID || got.SamAccountName != "svc-web" || got.DNSHostName != "svc-web.corp.local" {
 		t.Fatalf("Get round trip = %+v, want match of %+v", got, g)
 	}
 }
@@ -370,8 +371,8 @@ func TestServiceAccountUpdateSamAccountName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if g.SamAccountName != "svc$" {
-		t.Fatalf("SamAccountName after create = %q, want svc$", g.SamAccountName)
+	if g.SamAccountName != "svc" {
+		t.Fatalf("SamAccountName after create = %q, want svc", g.SamAccountName)
 	}
 
 	upd, err := client.ServiceAccount.Update(ctx, adpwsh.ByGUID(g.GUID), adpwsh.GMSASpec{
@@ -381,8 +382,8 @@ func TestServiceAccountUpdateSamAccountName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update (change sam svc -> svc2): %v", err)
 	}
-	if upd.SamAccountName != "svc2$" {
-		t.Fatalf("SamAccountName after sam change = %q, want svc2$", upd.SamAccountName)
+	if upd.SamAccountName != "svc2" {
+		t.Fatalf("SamAccountName after sam change = %q, want svc2", upd.SamAccountName)
 	}
 
 	// Repeating the same (already-applied, un-suffixed) sam must not error
@@ -394,8 +395,8 @@ func TestServiceAccountUpdateSamAccountName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update (unchanged sam): %v", err)
 	}
-	if upd.SamAccountName != "svc2$" {
-		t.Fatalf("SamAccountName after unchanged-sam update = %q, want svc2$ (no churn)", upd.SamAccountName)
+	if upd.SamAccountName != "svc2" {
+		t.Fatalf("SamAccountName after unchanged-sam update = %q, want svc2 (no churn)", upd.SamAccountName)
 	}
 }
 

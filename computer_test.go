@@ -32,8 +32,12 @@ func TestComputerJSONModel(t *testing.T) {
 	if c.Container != "OU=tfacc,DC=corp,DC=local" {
 		t.Errorf("Container=%q", c.Container)
 	}
-	if c.SamAccountName != "WEB01$" {
-		t.Errorf("sam=%q (library keeps $, provider strips)", c.SamAccountName)
+	// The model carries the un-suffixed base, the same form ComputerSpec
+	// takes. AD's own trailing "$" is stripped in model(): keeping it made
+	// this library's Computer differ from go-adldap's for the same object,
+	// which the cross-backend differential suite caught on the lab.
+	if c.SamAccountName != "WEB01" {
+		t.Errorf("sam=%q, want the un-suffixed base", c.SamAccountName)
 	}
 	if c.AccountExpiration == nil || c.AccountExpiration.Year() != 2027 {
 		t.Errorf("expiry=%v", c.AccountExpiration)

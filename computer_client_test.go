@@ -51,9 +51,10 @@ func TestComputerClientCreateGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// AD itself appends the trailing "$" to a computer's sAMAccountName.
-	if c.SamAccountName != "WEB01$" {
-		t.Fatalf("sam = %q, want WEB01$", c.SamAccountName)
+	// AD itself appends a trailing "$" to a computer's sAMAccountName, and
+	// model() strips it again: the spec and the model speak one spelling.
+	if c.SamAccountName != "WEB01" {
+		t.Fatalf("sam = %q, want WEB01", c.SamAccountName)
 	}
 	if c.DNSHostName != "web01.corp.local" || c.Container != "OU=x,DC=corp,DC=local" {
 		t.Fatalf("created computer = %+v", c)
@@ -63,7 +64,7 @@ func TestComputerClientCreateGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.GUID != c.GUID || got.SamAccountName != "WEB01$" || got.DNSHostName != "web01.corp.local" {
+	if got.GUID != c.GUID || got.SamAccountName != "WEB01" || got.DNSHostName != "web01.corp.local" {
 		t.Fatalf("Get round trip = %+v, want match of %+v", got, c)
 	}
 }
@@ -259,8 +260,8 @@ func TestComputerClientUpdateSamAccountName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if c.SamAccountName != "WEB01$" {
-		t.Fatalf("SamAccountName after create = %q, want WEB01$", c.SamAccountName)
+	if c.SamAccountName != "WEB01" {
+		t.Fatalf("SamAccountName after create = %q, want WEB01", c.SamAccountName)
 	}
 
 	upd, err := client.Computer.Update(ctx, adpwsh.ByGUID(c.GUID), adpwsh.ComputerSpec{
@@ -269,8 +270,8 @@ func TestComputerClientUpdateSamAccountName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update (change sam WEB01 -> WEB02): %v", err)
 	}
-	if upd.SamAccountName != "WEB02$" {
-		t.Fatalf("SamAccountName after sam change = %q, want WEB02$", upd.SamAccountName)
+	if upd.SamAccountName != "WEB02" {
+		t.Fatalf("SamAccountName after sam change = %q, want WEB02", upd.SamAccountName)
 	}
 
 	// Repeating the same (already-applied, un-suffixed) sam must not error
@@ -281,8 +282,8 @@ func TestComputerClientUpdateSamAccountName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update (unchanged sam): %v", err)
 	}
-	if upd.SamAccountName != "WEB02$" {
-		t.Fatalf("SamAccountName after unchanged-sam update = %q, want WEB02$ (no churn)", upd.SamAccountName)
+	if upd.SamAccountName != "WEB02" {
+		t.Fatalf("SamAccountName after unchanged-sam update = %q, want WEB02 (no churn)", upd.SamAccountName)
 	}
 }
 
