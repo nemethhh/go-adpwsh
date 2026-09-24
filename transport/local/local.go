@@ -5,11 +5,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
+	"github.com/nemethhh/go-adpwsh/internal/adscript"
 )
+
+// largeCommandThreshold is the encoded-command length at and beyond which Run
+// writes the script to a temp file and runs it with -File. Windows caps a whole
+// process command line at 32767 characters, and an ACL op's composed script
+// base64-encodes past that; the margin covers the pwsh path and fixed flags.
+const largeCommandThreshold = 30000
 
 // waitDelay bounds how long Wait may block on the output pipes after the child
 // has exited. Without it a grandchild that outlived the kill would hang Run
@@ -56,7 +64,18 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 
 	// The command is fixed text plus a base64 argument, exactly as the
 	// Transport contract documents. Nothing the caller supplies reaches argv.
-	cmd := exec.Command(t.pwsh, "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand)
+	args := []string{"-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand}
+	if len(encodedCommand) >= largeCommandThreshold {
+		path, err := writeScriptFile(t.cfg.WorkingDir, encodedCommand)
+		if err != nil {
+			return adpwsh.Result{}, &adpwsh.Error{Kind: adpwsh.KindTransport, Op: "local.Run", Err: err}
+		}
+		defer func() { _ = os.Remove(path) }()
+		// -EncodedCommand bypasses the execution policy and -File does not, so
+		// a GPO-hardened host would otherwise refuse every large op.
+		args = []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path}
+	}
+	cmd := exec.Command(t.pwsh, args...)
 	cmd.Dir = t.cfg.WorkingDir
 	cmd.Stdin = bytes.NewReader(payload)
 	var stdout, stderr bytes.Buffer
@@ -113,3 +132,24 @@ func (t *Transport) Run(ctx context.Context, encodedCommand string, payload []by
 func (t *Transport) Close() error { return nil }
 
 var _ adpwsh.Transport = (*Transport)(nil)
+
+// writeScriptFile decodes the command into a private temp .ps1. The script is
+// the op's constant text; every value still arrives as JSON on stdin. The BOM
+// makes Windows PowerShell 5.1 read it as UTF-8 rather than the ANSI code page.
+func writeScriptFile(dir, encodedCommand string) (string, error) {
+	script, err := adscript.DecodeCommand(encodedCommand)
+	if err != nil {
+		return "", fmt.Errorf("cannot decode a large command for the temp-file path: %w", err)
+	}
+	f, err := os.CreateTemp(dir, "adpwsh-*.ps1")
+	if err != nil {
+		return "", fmt.Errorf("cannot create a temp script: %w", err)
+	}
+	_, werr := f.WriteString("\ufeff" + script)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("cannot write the temp script %s: %w", f.Name(), errors.Join(werr, cerr))
+	}
+	return f.Name(), nil
+}
