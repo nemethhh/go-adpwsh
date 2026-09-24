@@ -72,8 +72,10 @@ func notFound(id string) Response {
 }
 
 func alreadyExists(dn string) Response {
-	return Fail("Microsoft.ActiveDirectory.Management.ADIdentityAlreadyExistsException",
+	r := Fail("Microsoft.ActiveDirectory.Management.ADIdentityAlreadyExistsException",
 		fmt.Sprintf("The object %s already exists", dn), 0x1392)
+	r.Err.TargetName = dn
+	return r
 }
 
 func (d *Directory) nextGUID() string {

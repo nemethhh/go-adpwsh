@@ -120,6 +120,23 @@ func TestDirectoryEnforcesUniquenessAndChildren(t *testing.T) {
 	}
 }
 
+func TestDirectoryAlreadyExistsNamesTheExistingDN(t *testing.T) {
+	c, _ := newClient(t)
+	ctx := context.Background()
+
+	if _, err := c.OU.Create(ctx, adpwsh.OUSpec{Name: "Staff", Container: "DC=corp,DC=local"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.OU.Create(ctx, adpwsh.OUSpec{Name: "Staff", Container: "DC=corp,DC=local"})
+	var e *adpwsh.Error
+	if !errors.As(err, &e) || e.Kind != adpwsh.KindAlreadyExists {
+		t.Fatalf("duplicate create = %v, want KindAlreadyExists", err)
+	}
+	if want := "OU=Staff,DC=corp,DC=local"; e.Target != want {
+		t.Errorf("Target = %q, want %q", e.Target, want)
+	}
+}
+
 func TestDirectoryUserAndGroupLifecycle(t *testing.T) {
 	c, _ := newClient(t)
 	ctx := context.Background()
