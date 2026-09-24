@@ -16,7 +16,11 @@ import (
 // [Console]::SetIn (from adscript.WrapFullPayload) redirects [Console]::In to
 // the JSON payload before the preamble reads it, so this ReadToEnd of the real
 // stdin and the script's ReadToEnd of the payload do not collide.
-const coldBootstrap = `$s=[Console]::In.ReadToEnd(); Invoke-Expression $s`
+//
+// A WinRS process has no console, so [Console]::OutputEncoding is the OEM code
+// page and every non-ASCII character in the result envelope leaves as one
+// unmappable byte. UTF-8 without a BOM is what the envelope parser reads.
+const coldBootstrap = `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $s=[Console]::In.ReadToEnd(); Invoke-Expression $s`
 
 // ColdTransport runs one fresh WinRS shell per operation over WSMan, feeding the
 // wrapped op script on stdin to a `<pwsh> -EncodedCommand <bootstrap>` process.
@@ -31,8 +35,9 @@ type ColdTransport struct {
 }
 
 // NewCold builds a cold WinRS transport from cfg. The transport authenticates to
-// WinRS as cfg.Username (the transport identity, which needs WinRS shell access
-// -- Remote Management Users / an admin; distinct from domain.Credential, the AD
+// WinRS as cfg.Username (the transport identity, which needs execute permission in
+// the host's WinRM service RootSDDL -- an admin has it, Remote Management Users
+// membership alone does not grant it; distinct from domain.Credential, the AD
 // identity delivered in the payload).
 func NewCold(cfg Config) (*ColdTransport, error) {
 	if err := cfg.Validate(); err != nil {

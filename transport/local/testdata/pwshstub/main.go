@@ -26,6 +26,7 @@ type record struct {
 	Args     []string `json:"args"`
 	Stdin    string   `json:"stdin"`
 	Dir      string   `json:"dir"`
+	File     string   `json:"file"`
 	Finished bool     `json:"finished"`
 }
 
@@ -35,6 +36,14 @@ func main() {
 	stdin, _ := io.ReadAll(os.Stdin)
 	dir, _ := os.Getwd()
 	rec := record{Args: os.Args[1:], Stdin: string(stdin), Dir: dir}
+	// A -File script is read now: the transport deletes it once the child exits.
+	for i, a := range rec.Args {
+		if a == "-File" && i+1 < len(rec.Args) {
+			if b, err := os.ReadFile(rec.Args[i+1]); err == nil {
+				rec.File = string(b)
+			}
+		}
+	}
 	appendRecord(rec)
 
 	// PWSHSTUB_GATE holds every invocation open at once, which is how the

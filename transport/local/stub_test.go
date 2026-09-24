@@ -49,6 +49,7 @@ type stubRecord struct {
 	Args     []string `json:"args"`
 	Stdin    string   `json:"stdin"`
 	Dir      string   `json:"dir"`
+	File     string   `json:"file"`
 	Finished bool     `json:"finished"`
 }
 
@@ -75,6 +76,7 @@ func stubRecords(t *testing.T, path string) []stubRecord {
 
 	var out []stubRecord
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {

@@ -3,6 +3,7 @@ package local_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	adpwsh "github.com/nemethhh/go-adpwsh"
+	"github.com/nemethhh/go-adpwsh/internal/adscript"
 	adlocal "github.com/nemethhh/go-adpwsh/transport/local"
 )
 
@@ -345,5 +347,40 @@ func TestMissingEnvelopeIsATransportFailureAboveTheSeam(t *testing.T) {
 		t.Fatal("adpwsh.New must fail when pwsh produced no envelope")
 	} else if !errors.Is(err, adpwsh.ErrTransport) {
 		t.Errorf("want KindTransport, got %v", err)
+	}
+}
+
+func TestLocalRunsACommandPastTheCommandLineLimitFromAFile(t *testing.T) {
+	records := recordFile(t)
+	script := strings.Repeat("Write-Output 'an ACL op composes a long script'\n", 1000)
+	encoded := adscript.EncodeCommand(script)
+	if len(encoded) < 32767 {
+		t.Fatalf("test script encodes to %d chars; it must pass the Windows command-line limit", len(encoded))
+	}
+
+	tr := newTransport(t, adlocal.Config{})
+	if _, err := tr.Run(context.Background(), encoded, []byte(`{"op":"acl"}`)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	recs := stubRecords(t, records)
+	if len(recs) == 0 {
+		t.Fatal("the stub recorded nothing; Run did not start it")
+	}
+	if slices.Contains(recs[0].Args, "-EncodedCommand") {
+		t.Fatal("a command past the command-line limit was still passed on argv")
+	}
+	if !slices.Contains(recs[0].Args, "-File") {
+		t.Fatalf("args = %q, want -File", recs[0].Args)
+	}
+	if got := strings.TrimPrefix(recs[0].File, "\ufeff"); got != script {
+		t.Errorf("the -File script is not the decoded command (%d bytes, want %d)", len(got), len(script))
+	}
+	if recs[0].Stdin != `{"op":"acl"}` {
+		t.Errorf("stdin = %q, want the payload verbatim", recs[0].Stdin)
+	}
+	path := recs[0].Args[slices.Index(recs[0].Args, "-File")+1]
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the temp script %s was not removed: %v", path, err)
 	}
 }

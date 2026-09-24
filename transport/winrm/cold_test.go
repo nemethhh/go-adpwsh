@@ -90,3 +90,19 @@ func TestColdRunDecodeErrorIsTransport(t *testing.T) {
 		t.Fatalf("want KindTransport for a bad encoded command, got %v", err)
 	}
 }
+
+func TestColdBootstrapWritesUTF8BeforeRunningTheOp(t *testing.T) {
+	f := &fakeColdExec{result: adpwsh.Result{Stdout: `{"ok":true}`}}
+	if _, err := newColdWithExec(f).Run(context.Background(), adscript.EncodeCommand("Get-ADUser"), nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	bootstrap, err := adscript.DecodeCommand(f.gotBootstrap)
+	if err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	set := strings.Index(bootstrap, "[Console]::OutputEncoding")
+	run := strings.Index(bootstrap, "Invoke-Expression")
+	if set < 0 || set > run || !strings.Contains(bootstrap, "UTF8Encoding") {
+		t.Errorf("bootstrap must switch [Console]::OutputEncoding to UTF-8 before the op runs: %q", bootstrap)
+	}
+}
